@@ -22,6 +22,7 @@ const logger = require("./logger");
 const requestLogger = require("./middleware/requestLogger");
 const { createCorsMiddleware, getAllowedOrigins } = require("./middleware/corsPolicy");
 const { createRateLimiter } = require("./middleware/rateLimiter");
+const { metricsHandler, countRequest, startQueueRefresh } = require("./services/metrics");
 const projectsRouter = require("./routes/projects");
 const uploadsRouter = require("./routes/uploads");
 const donationsRouter = require("./routes/donations");
@@ -49,6 +50,18 @@ if (process.env.NODE_ENV !== "production") {
     console.warn("[swagger] docs unavailable:", err.message);
   }
 }
+
+app.use((req, res, next) => {
+  const originalEnd = res.end.bind(res);
+  res.end = function promCountEnd(chunk, encoding, cb) {
+    if (!res.__metricsCounted) {
+      res.__metricsCounted = true;
+      countRequest(req, res);
+    }
+    return originalEnd(chunk, encoding, cb);
+  };
+  next();
+});
 
 app.use(helmet());
 app.use((req, res, next) => {
@@ -86,13 +99,6 @@ app.use((req, res, next) => {
 
 const healthRouter = require("./routes/health");
 const readinessRouter = require("./routes/readiness");
-const { register: metricsRegister } = require("./services/metrics");
-
-async function metricsHandler(req, res) {
-  res.set("Content-Type", metricsRegister.contentType);
-  res.end(await metricsRegister.metrics());
-}
-
 app.get("/metrics", metricsHandler);
 app.get("/api/metrics", metricsHandler);
 app.use("/health", healthRouter);
@@ -158,14 +164,16 @@ app.use(sentryErrorMiddleware());
 app.use((err, req, res, next) => {
   void next;
   console.error("[Error]", err.message);
-  // A timed-out Horizon/Soroban call means an upstream chain service stopped
-  // answering — that is a 503 the caller can retry, not a 500 in this API
-  // (issue #1097). Caught centrally so every call site benefits, including the
-  // routes that use the SDK server directly.
-  if (isStellarTimeoutError(err)) {
-    return res.status(503).json({ error: "Stellar network did not respond in time, please retry" });
+  const isTimeout = isStellarTimeoutError(err);
+  const status = isTimeout ? 503 : err.status || 500;
+  if (!res.__metricsCounted) {
+    res.__metricsCounted = true;
+    countRequest(req, { ...res, statusCode: status });
   }
-  res.status(err.status || 500).json({ error: err.message || "Internal server error" });
+  if (isTimeout) {
+    return res.status(status).json({ error: "Stellar network did not respond in time, please retry" });
+  }
+  res.status(status).json({ error: err.message || "Internal server error" });
 });
 
 async function startServer() {
@@ -191,6 +199,8 @@ async function startServer() {
   await startDonationPushQueue();
 
   startIndexer(io).catch(err => logger.error({ event: "indexer_startup_error", err }, err.message));
+
+  startQueueRefresh();
 
   server.listen(PORT, () => {
     logger.info({ event: "server_start", port: PORT }, `API listening on port ${PORT}`);
