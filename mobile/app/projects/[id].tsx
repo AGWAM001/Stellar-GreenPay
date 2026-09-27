@@ -28,8 +28,6 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import axios from 'axios';
 
 import * as Notifications from 'expo-notifications';
-import * as Sharing from 'expo-sharing';
-import { captureRef } from 'react-native-view-shot';
 import { useTheme } from '../theme';
 import {
   getPushToken,
@@ -37,14 +35,31 @@ import {
   unfollowProject,
   markNotificationsSeen,
 } from '../../utils/notifications';
-
-import { getPushToken, followProject, unfollowProject } from '../../utils/notifications';
-import { useTheme } from '../theme';
-import { markNotificationsSeen } from '../../utils/notifications';
-import * as Notifications from 'expo-notifications';
-
+import {
+  loadRecurringDonations,
+  type RecurringDonation,
+} from '../../utils/recurringDonations';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
+
+/**
+ * Format an ISO due date for the recurring-donation banner.
+ * Exported so `ProjectDetailScreen.test.tsx` can pin the locale-agnostic
+ * contract (invalid input must fall back to the raw string).
+ */
+export function formatNextPaymentDate(isoDate: string): string {
+  try {
+    const date = new Date(isoDate);
+    if (isNaN(date.getTime())) return isoDate;
+    return date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  } catch {
+    return isoDate;
+  }
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -90,9 +105,6 @@ function Toast({
   onHideRef.current = onHide;
 
   useEffect(() => {
-
-    let fadeOutTimer: ReturnType<typeof setTimeout> | null = null;
-
     // Unmount-race hygiene for the toast's animation chain.
     //
     // Three things can race against an unmount:
@@ -114,7 +126,6 @@ function Toast({
     let mounted = true;
     let anim: Animated.CompositeAnimation | undefined;
 
-
     // Fade in
     anim = Animated.timing(opacity, {
       toValue: 1,
@@ -125,12 +136,8 @@ function Toast({
       // Bail if the component unmounted before fade-in finished.
       if (!mounted) return;
       // Hold for 2 s, then fade out
-
-      fadeOutTimer = setTimeout(() => {
-
       holdTimer = setTimeout(() => {
         if (!mounted) return;
-
         Animated.timing(opacity, {
           toValue: 0,
           duration: 300,
@@ -138,15 +145,6 @@ function Toast({
         }).start(onHideRef.current);
       }, 2000);
     });
-
-
-    // Clear the fade-out timer on unmount so a dismissed toast never fires a
-    // stale timer (which could otherwise animate after the component is gone).
-    return () => {
-      if (fadeOutTimer) clearTimeout(fadeOutTimer);
-      opacity.stopAnimation();
-    };
-  }, [opacity]);
 
     return () => {
       mounted = false;
@@ -156,7 +154,7 @@ function Toast({
       // exposes `.stop(callback?)`; we don't need a callback here.)
       anim?.stop();
     };
-  }, []);
+  }, [opacity]);
 
 
   const bg = variant === 'success' ? '#227239' : '#b91c1c';
@@ -214,23 +212,6 @@ export default function ProjectDetailScreen() {
   const [followLoading, setFollowLoading] = useState(false);
   const [activeDonation, setActiveDonation] = useState<RecurringDonation | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
-  const viewShotRef = useRef<View>(null);
-
-  // Share the project as an image via the native share sheet.
-  const handleShare = async () => {
-    try {
-      if (!project) return;
-      const uri = await captureRef(viewShotRef, { format: 'png', quality: 1 });
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, {
-          mimeType: 'image/png',
-          dialogTitle: `Share ${project.name}`,
-        });
-      }
-    } catch {
-      // Sharing is optional — never block the screen on it.
-    }
-  };
 
   const checkRecurringDonation = useCallback(async (projectId: string) => {
     try {
@@ -265,6 +246,12 @@ export default function ProjectDetailScreen() {
       });
     }
   }, [id]);
+
+  // ── helpers ────────────────────────────────────────────────────────────────
+
+  const showToast = (message: string, variant: ToastVariant = 'success') => {
+    setToast({ message, variant });
+  };
 
   const loadUpdates = async (projectId: string) => {
     try {
@@ -439,11 +426,7 @@ export default function ProjectDetailScreen() {
   const pct = progressPercent(project.raisedXLM, project.goalXLM);
 
   return (
-    <View
-      ref={viewShotRef}
-      collapsable={false}
-      style={[styles.wrapper, { backgroundColor: colors.background }]}
-    >
+    <View style={[styles.wrapper, { backgroundColor: colors.background }]}>
       <ScrollView style={styles.container}>
         {/* Header */}
         <View style={[styles.header, { backgroundColor: colors.primary }]}>
@@ -460,21 +443,13 @@ export default function ProjectDetailScreen() {
               </Text>
             </View>
             <TouchableOpacity
-
+              testID="share-button"
               style={styles.shareButton}
               onPress={handleShare}
               activeOpacity={0.7}
               accessibilityRole="button"
               accessibilityLabel={`Share ${project.name}`}
-              accessibilityHint="Opens the share sheet"
-
-              testID="share-button"
-              style={styles.shareButton}
-              onPress={handleShare}
-              accessibilityRole="button"
-              accessibilityLabel={`Share ${project.name}`}
               accessibilityHint="Opens the system share sheet so you can send this project to others"
-
             >
               <Text style={styles.shareIcon}>↗</Text>
             </TouchableOpacity>
@@ -493,7 +468,7 @@ export default function ProjectDetailScreen() {
                 shadowColor: colors.cardShadow,
               },
             ]}
-            accessibilityRole="region"
+            accessibilityRole="summary"
             accessibilityLabel={`Active recurring donation banner for ${project.name}`}
           >
             <View style={styles.recurringBannerContent}>
@@ -619,9 +594,8 @@ export default function ProjectDetailScreen() {
         </View>
       )}
 
-        {/* Follow button — visible whenever we have a push token, OR show a
-            softer prompt when we don't so the user knows the feature exists */}
-      {pushToken && (
+        {/* Follow button — always visible; dimmed when no push token so the
+            feature is discoverable and pressing it explains why it can't run */}
         <TouchableOpacity
           testID="follow-button"
           style={[
@@ -850,6 +824,43 @@ const styles = StyleSheet.create({
   },
   donateButtonText: {
     fontSize: 18,
+    fontWeight: 'bold',
+  },
+  recurringBanner: {
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 4,
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    elevation: 2,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+  },
+  recurringBannerContent: {
+    flex: 1,
+    marginRight: 12,
+  },
+  recurringBannerText: {
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  recurringBannerBold: {
+    fontWeight: 'bold',
+  },
+  manageButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#227239',
+  },
+  manageButtonText: {
+    color: '#fff',
+    fontSize: 13,
     fontWeight: 'bold',
   },
   updatesCard: {

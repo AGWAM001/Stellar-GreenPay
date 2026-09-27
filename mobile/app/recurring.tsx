@@ -171,12 +171,6 @@ export default function RecurringScreen() {
     loadProjects();
   }, [loadProjects]);
 
-  useFocusEffect(
-    useCallback(() => {
-      refresh();
-    }, [refresh])
-  );
-
 
   const handleCancel = async (id: string) => {
     await cancelRecurringDonation(id);
@@ -323,8 +317,6 @@ export default function RecurringScreen() {
       ) : null}
 
       {/* Active recurring donations */}
-      {donations.length === 0 ? (
-
       <View style={styles.tabBar}>
         <TouchableOpacity
           style={[styles.tab, activeTab === 'active' && styles.tabActive]}

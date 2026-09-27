@@ -14,6 +14,7 @@ const { computeBadges, mapDonationRow } = require("../services/store");
 const { server } = require("../services/stellar");
 const donationEvents = require("../services/donationEvents");
 const { enqueueProfileUpdate } = require("../services/profileQueue");
+const { sendDonationConfirmedPush } = require("../services/push");
 const donationLimiter = createRateLimiter(10, 1, "donations"); // 10 requests per minute
 
 function resolveDonorCountry(ip) {
@@ -248,6 +249,16 @@ async function recordDonation(req, res, next) {
       projectName,
       amountXLM: String(donationRow.amount_xlm ?? parsedAmount),
       donorBadge,
+    });
+
+    // Fire-and-forget: a push failure must never fail the donation response.
+    // Payload carries { screen, params } so tapping navigates to the project (#1121).
+    sendDonationConfirmedPush({
+      donorAddress,
+      project: projectResult.rows[0],
+      donation: recordedDonation,
+    }).catch((err) => {
+      logger.error({ event: "push_donation_confirmed_failed", err, projectId }, "Failed to send donation confirmation push");
     });
 
     res.status(201).json({ success: true, data: mapDonationRow(donationResult.rows[0]) });

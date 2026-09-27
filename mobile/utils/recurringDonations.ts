@@ -106,6 +106,14 @@ export async function createRecurringDonation(input: {
   return donation;
 }
 
+export async function cancelRecurringDonation(id: string): Promise<void> {
+  const all = await loadRecurringDonations();
+  const updated = all.map((d) =>
+    d.id === id ? { ...d, status: 'cancelled' as const } : d,
+  );
+  await saveRecurringDonations(updated);
+}
+
 export interface PaymentRecord {
   id: string;
   donationId: string;
