@@ -50,7 +50,7 @@ function createApp() {
   const app = express();
   app.use("/api/leaderboard", leaderboardRouter);
   // Catch-all error handler so errors don't crash tests
-  app.use((err, req, res, next) => {
+  app.use((err, req, res, _next) => {
     res.status(500).json({ success: false, error: err.message });
   });
   return app;
