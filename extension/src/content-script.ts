@@ -1,3 +1,4 @@
+import './widget.css';
 import { isUrlAllowed } from './allowlist';
 import { loadSettings, DEFAULT_SETTINGS } from './settings';
 
@@ -15,31 +16,6 @@ export function createTooltip(): HTMLDivElement {
   const tooltip = document.createElement('div');
   tooltip.className = 'greenpay-tooltip';
   tooltip.textContent = 'Donate to this address via GreenPay';
-  tooltip.style.cssText = `
-    position: absolute;
-    background: #1a1a1a;
-    color: #fff;
-    padding: 8px 12px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 500;
-    white-space: nowrap;
-    z-index: 10000;
-    pointer-events: none;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-    bottom: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    margin-bottom: 8px;
-  `;
-import "./widget.css";
-
-const STELLAR_ADDRESS_REGEX = /\bG[A-Z2-7]{55}\b/g;
-
-function createTooltip(): HTMLDivElement {
-  const tooltip = document.createElement("div");
-  tooltip.className = "greenpay-tooltip";
-  tooltip.textContent = "Donate to this address via GreenPay";
   return tooltip;
 }
 
@@ -65,25 +41,25 @@ export function highlightAddresses(node: Node) {
     while ((match = STELLAR_ADDRESS_REGEX.exec(text)) !== null) {
       if (match.index > lastIndex) {
         fragment.appendChild(
-          document.createTextNode(text.substring(lastIndex, match.index)),
+          document.createTextNode(text.substring(lastIndex, match.index))
         );
       }
 
-      const span = document.createElement("span");
-      span.className = "greenpay-address";
+      const span = document.createElement('span');
+      span.className = 'greenpay-address';
       span.textContent = match[0];
 
       let tooltip: HTMLDivElement | null = null;
 
-      span.addEventListener("mouseenter", () => {
+      span.addEventListener('mouseenter', () => {
         tooltip = createTooltip();
         const rect = span.getBoundingClientRect();
-        tooltip.style.left = rect.left + rect.width / 2 + "px";
-        tooltip.style.top = rect.top + window.scrollY + "px";
+        tooltip.style.left = rect.left + rect.width / 2 + 'px';
+        tooltip.style.top = rect.top + window.scrollY + 'px';
         document.body.appendChild(tooltip);
       });
 
-      span.addEventListener("mouseleave", () => {
+      span.addEventListener('mouseleave', () => {
         if (tooltip && tooltip.parentNode) {
           tooltip.parentNode.removeChild(tooltip);
         }
@@ -98,11 +74,6 @@ export function highlightAddresses(node: Node) {
             address: matchedAddress,
           });
         }
-      span.addEventListener("click", () => {
-        chrome.runtime.sendMessage({
-          action: "openDonatePopup",
-          address: match![0],
-        });
       });
 
       fragment.appendChild(span);
@@ -118,8 +89,8 @@ export function highlightAddresses(node: Node) {
     }
   } else if (
     node.nodeType === Node.ELEMENT_NODE &&
-    !["SCRIPT", "STYLE", "NOSCRIPT", "IFRAME"].includes(
-      (node as HTMLElement).tagName,
+    !['SCRIPT', 'STYLE', 'NOSCRIPT', 'IFRAME'].includes(
+      (node as HTMLElement).tagName
     )
   ) {
     if (
@@ -130,7 +101,6 @@ export function highlightAddresses(node: Node) {
     }
     const children = Array.from(node.childNodes);
     children.forEach((child) => highlightAddresses(child));
-    node.childNodes.forEach((child) => highlightAddresses(child));
   }
 }
 
@@ -144,16 +114,6 @@ export function checkProjectContext() {
 
   if (!projectId && typeof window !== 'undefined' && window.location?.pathname) {
     const match = window.location.pathname.match(/\/projects\/([a-zA-Z0-9_-]+)/);
-function checkProjectContext() {
-  const metaTag =
-    document.querySelector('meta[name="greenpay:project:id"]') ||
-    document.querySelector('meta[property="greenpay:project:id"]');
-  let projectId = metaTag ? metaTag.getAttribute("content") : null;
-
-  if (!projectId) {
-    const match = window.location.pathname.match(
-      /\/projects\/([a-zA-Z0-9_-]+)/,
-    );
     if (match) projectId = match[1];
   }
 
@@ -241,9 +201,6 @@ export async function checkAndInject(currentUrl?: string): Promise<boolean> {
       cleanupWidget();
     }
     return false;
-    chrome.runtime
-      .sendMessage({ action: "setProjectContext", projectId })
-      .catch(() => {});
   }
 
   injectWidget();
@@ -288,30 +245,3 @@ if (!isTestEnv) {
     });
   }
 }
-document.addEventListener("DOMContentLoaded", () => {
-  highlightAddresses(document.body);
-  checkProjectContext();
-});
-
-const observer = new MutationObserver((mutations) => {
-  mutations.forEach((mutation) => {
-    mutation.addedNodes.forEach((node) => {
-      if (
-        node.nodeType === Node.ELEMENT_NODE ||
-        node.nodeType === Node.TEXT_NODE
-      ) {
-        highlightAddresses(node);
-      }
-    });
-  });
-  checkProjectContext();
-});
-
-observer.observe(document.body, {
-  childList: true,
-  subtree: true,
-});
-
-window.addEventListener("popstate", checkProjectContext);
-// In case DOMContentLoaded already fired
-checkProjectContext();
