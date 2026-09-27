@@ -13,8 +13,19 @@ const TEST_VALID_PUBLIC_KEY =
   'GABCXYZ1234567890123456789012345678901234567890123456789012345';
 jest.mock('@stellar/stellar-sdk', () => ({
   StrKey: {
+    isValidEd25519PublicKey: (key: unknown) => key === TEST_VALID_PUBLIC_KEY,
+
+// useWallet.ts imports `StrKey` from `@stellar/stellar-sdk` at module-load
+// time. The real package pulls axios into Horizon-baked call paths and
+// breaks under jest-expo@57's jsdom-light env. We only need the one method
+// the hook calls (`isValidEd25519PublicKey`); everything else on the SDK
+// surface stays undefined so test code that DOES need them can opt-in
+// to a fuller local mock.
+jest.mock('@stellar/stellar-sdk', () => ({
+  StrKey: {
     isValidEd25519PublicKey: (key: string) =>
       typeof key === 'string' && key.startsWith('G') && key.length === 56,
+
   },
 }));
 
