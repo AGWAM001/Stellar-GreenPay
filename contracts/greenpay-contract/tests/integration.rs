@@ -265,20 +265,20 @@ fn test_donate_usdc_oracle_invoked_per_transaction() {
 /// StaleOracle always returns `timestamp = 0`.  We advance the ledger to
 /// `ORACLE_MAX_AGE_SECS + 1` to trip the guard.
 #[test]
-#[should_panic(expected = "Oracle price is stale")]
 fn test_donate_usdc_stale_oracle_price_is_rejected() {
     let (env, client, usdc_token, project_id, donor) = setup_with_stale_oracle();
 
     // One second past the freshness window: now - 0 > 900 → stale.
     env.ledger().set_timestamp(ORACLE_MAX_AGE_SECS + 1);
 
-    client.donate_usdc(
+    let result = client.try_donate_usdc(
         &usdc_token,
         &donor,
         &project_id,
         &(10 * 1_000_000i128),
         &0u32,
     );
+    assert!(result.is_err(), "stale oracle prices must be rejected");
 }
 
 /// Exactly at the freshness boundary the quote is still accepted.
