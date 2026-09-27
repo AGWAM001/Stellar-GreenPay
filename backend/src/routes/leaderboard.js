@@ -81,7 +81,7 @@ router.get("/", leaderboardLimiter, async (req, res, next) => {
       : "";
 
     const query = `
-      SELECT p.public_key, p.display_name, p.badges,
+      SELECT p.public_key, p.display_name, p.avatar_url, p.badges,
              COALESCE(SUM(d.amount_xlm), 0)::NUMERIC AS total_donated_xlm,
              COUNT(DISTINCT d.project_id)::INTEGER AS projects_supported,
              COALESCE(
@@ -111,7 +111,7 @@ router.get("/", leaderboardLimiter, async (req, res, next) => {
       LEFT JOIN donations d ON p.public_key = d.donor_address
       LEFT JOIN projects pr ON pr.id = d.project_id
       ${whereClause}
-      GROUP BY p.public_key, p.display_name, p.badges
+      GROUP BY p.public_key, p.display_name, p.avatar_url, p.badges
       ORDER BY ${sortBy} DESC, p.public_key DESC
       LIMIT $${limitIdx}
     `;
@@ -126,6 +126,9 @@ router.get("/", leaderboardLimiter, async (req, res, next) => {
       rank: i + 1,
       publicKey: p.public_key,
       displayName: p.display_name || null,
+      display_name: p.display_name || null,
+      avatarUrl: p.avatar_url || null,
+      avatar_url: p.avatar_url || null,
       totalDonatedXLM: p.total_donated_xlm?.toString() || "0",
       projectsSupported: p.projects_supported,
       topBadge: p.badges?.[0]?.tier || null,

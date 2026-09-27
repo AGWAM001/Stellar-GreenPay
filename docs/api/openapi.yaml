@@ -354,6 +354,15 @@ components:
         displayName:
           type: string
           nullable: true
+        display_name:
+          type: string
+          nullable: true
+        avatarUrl:
+          type: string
+          nullable: true
+        avatar_url:
+          type: string
+          nullable: true
         totalDonatedXLM:
           type: string
         projectsSupported:
