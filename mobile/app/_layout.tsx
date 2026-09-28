@@ -10,6 +10,8 @@ import { useRouter } from 'expo-router';
 import { ThemeProvider, themes } from './theme';
 import { useDeepLink } from '../hooks/useDeepLink';
 import { setupNotificationListener, setupNotificationResponseListener, navigateFromInitialNotification } from '../utils/notifications';
+import { setupNotificationListener, setupNotificationResponseListener } from '../utils/notifications';
+import { loadKnownTestnetAddresses } from '../utils/stellarValidation';
 
 function DeepLinkHandler() {
   useDeepLink();
@@ -44,6 +46,13 @@ export default function RootLayout() {
   const colorScheme = useColorScheme();
   const themeMode = colorScheme === 'dark' ? 'dark' : 'light';
   const theme = themes[themeMode];
+
+  useEffect(() => {
+    // Hydrate the testnet-only address registry (issue #1126) so a
+    // Friendbot-funded account stays flagged after a restart, even once
+    // the app is pointed at mainnet.
+    void loadKnownTestnetAddresses();
+  }, []);
 
   return (
     <ThemeProvider>

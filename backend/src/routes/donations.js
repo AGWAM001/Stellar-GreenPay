@@ -15,6 +15,7 @@ const { server } = require("../services/stellar");
 const donationEvents = require("../services/donationEvents");
 const { enqueueProfileUpdate } = require("../services/profileQueue");
 const { sendDonationConfirmedPush } = require("../services/push");
+const { checkAndDeliverMilestones } = require("../services/webhook");
 const donationLimiter = createRateLimiter(10, 1, "donations"); // 10 requests per minute
 
 function resolveDonorCountry(ip) {
@@ -70,7 +71,7 @@ async function recordDonation(req, res, next) {
     );
     if (existingResult.rows[0]) {
       const existingRow = { ...existingResult.rows[0], co2_per_xlm: projectCo2PerXlm };
-      return res.json({ success: true, data: mapDonationRow(existingRow) });
+      return res.status(200).json({ success: true, data: mapDonationRow(existingRow) });
     }
 
     // Verify the transaction is confirmed on-chain before recording it.
@@ -192,7 +193,7 @@ async function recordDonation(req, res, next) {
 
     await redis.deletePattern("projects:list:*");
 
-    enqueueProfileUpdate(donorAddress).catch((err) => {
+    await enqueueProfileUpdate(donorAddress).catch((err) => {
       logger.error({ event: "profile_update_enqueue_failed", err, donorAddress }, "Failed to enqueue profile update job");
     });
 
@@ -215,8 +216,8 @@ async function recordDonation(req, res, next) {
 
     const projectName = (projectResult.rows[0] && projectResult.rows[0].name) || "GreenPay Project";
 
-    if (io && typeof io.emit === "function") {
-      io.emit("donation_event", {
+    if (io) {
+      const donationPayload = {
         projectId,
         projectName,
         donorAddress,
@@ -227,18 +228,28 @@ async function recordDonation(req, res, next) {
         campaignGoalXLM: null,
         campaignRaisedXLM: null,
         donorBadge,
-      });
+      };
+      if (typeof io.to === "function") {
+        io.to([`project:${projectId}`, "all-donations"]).emit("donation_event", donationPayload);
+      } else if (typeof io.emit === "function") {
+        io.emit("donation_event", donationPayload);
+      }
     }
 
     // Detect badge tier upgrades caused by this donation and emit badge_earned
     try {
       const prevTier = computeBadges(prevTotalDonated)[0]?.tier || null;
-      if (newTier && prevTier !== newTier && io && typeof io.emit === "function") {
-        io.emit("badge_earned", {
+      if (newTier && prevTier !== newTier && io) {
+        const badgePayload = {
           donorAddress,
           badge: newTier,
           projectId,
-        });
+        };
+        if (typeof io.to === "function") {
+          io.to(`project:${projectId}`).emit("badge_earned", badgePayload);
+        } else if (typeof io.emit === "function") {
+          io.emit("badge_earned", badgePayload);
+        }
       }
     } catch (err) {
       // Do not let badge emit failures break donation flow
@@ -259,6 +270,8 @@ async function recordDonation(req, res, next) {
       donation: recordedDonation,
     }).catch((err) => {
       logger.error({ event: "push_donation_confirmed_failed", err, projectId }, "Failed to send donation confirmation push");
+    await checkAndDeliverMilestones(projectId).catch((err) => {
+      logger.error({ event: "milestone_webhook_error", projectId, err: err.message }, "Failed to deliver milestone webhooks");
     });
 
     res.status(201).json({ success: true, data: mapDonationRow(donationResult.rows[0]) });
