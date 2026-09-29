@@ -207,7 +207,6 @@ describe("GET /api/donations/stream", () => {
 describe("POST /api/donations → SSE emission", () => {
   let httpServer;
   let request;
-  let baseUrl;
 
   beforeAll((done) => {
     const app = express();
@@ -215,7 +214,6 @@ describe("POST /api/donations → SSE emission", () => {
     httpServer = http.createServer(app);
     app.use("/api/donations", require("./donations"));
     httpServer.listen(0, () => {
-      baseUrl = `http://localhost:${httpServer.address().port}`;
       request = supertest(httpServer);
       done();
     });
