@@ -506,7 +506,7 @@ describe("POST /api/donations", () => {
 
   test("calculates badges from cumulative donations across multiple requests", async () => {
     const donorAddress = makePublicKey("F");
-    const client = createMockClient(
+    createMockClient(
       queryResult([{ id: "project-3" }]),    // SELECT project
       queryResult([]),                          // dedup check
       queryResult(),                            // BEGIN
@@ -684,7 +684,7 @@ describe("profile upsert on first donation", () => {
       created_at: "2026-03-29T10:00:00.000Z",
     };
 
-    const client = createMockClient(
+    createMockClient(
       queryResult([{ id: "project-p" }]),  // SELECT project
       queryResult([]),                      // dedup check
       queryResult(),                        // BEGIN
@@ -722,7 +722,7 @@ describe("profile upsert on first donation", () => {
       created_at: "2026-03-29T10:00:00.000Z",
     };
 
-    const client = createMockClient(
+    createMockClient(
       queryResult([{ id: "project-q" }]),  // SELECT project
       queryResult([]),                      // dedup check
       queryResult(),                        // BEGIN
@@ -760,7 +760,7 @@ describe("profile upsert on first donation", () => {
       created_at: "2026-03-29T10:00:00.000Z",
     };
 
-    const client = createMockClient(
+    createMockClient(
       queryResult([{ id: "project-r" }]),
       queryResult([]),
       queryResult(),

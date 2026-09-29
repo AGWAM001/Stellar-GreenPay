@@ -61,7 +61,11 @@ router.get("/", leaderboardLimiter, async (req, res, next) => {
       } catch {
         return res.status(400).json({ error: "Invalid cursor" });
       }
-      const sortValue = cursorData[sortBy];
+      const sortValue = sortBy === "total_donated_xlm"
+        ? cursorData.total_donated_xlm
+        : sortBy === "total_co2_offset_kg"
+          ? cursorData.total_co2_offset_kg
+          : cursorData.donor_count;
       const publicKey = cursorData.publicKey;
       if (sortValue === undefined || !publicKey) {
         return res.status(400).json({ error: "Invalid cursor" });
@@ -138,8 +142,13 @@ router.get("/", leaderboardLimiter, async (req, res, next) => {
     let nextCursor = null;
     if (hasMore) {
       const last = pageRows[pageRows.length - 1];
+      const lastSortVal = sortBy === "total_donated_xlm"
+        ? last.total_donated_xlm
+        : sortBy === "total_co2_offset_kg"
+          ? last.total_co2_offset_kg
+          : last.donor_count;
       nextCursor = Buffer.from(
-        JSON.stringify({ [sortBy]: last[sortBy], publicKey: last.public_key }),
+        JSON.stringify({ [sortBy]: lastSortVal, publicKey: last.public_key }),
       ).toString("base64");
     }
 
@@ -171,12 +180,12 @@ router.get("/history", leaderboardLimiter, async (req, res, next) => {
       [months]
     );
 
-    // Group rows by month
-    const grouped = {};
+    // Group rows by month using a Map to avoid object injection
+    const grouped = new Map();
     for (const row of result.rows) {
       const key = row.month.toISOString().slice(0, 7); // "YYYY-MM"
-      if (!grouped[key]) grouped[key] = [];
-      grouped[key].push({
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push({
         rank: row.rank,
         donorAddress: row.donor_address,
         displayName: row.display_name || null,
@@ -185,7 +194,7 @@ router.get("/history", leaderboardLimiter, async (req, res, next) => {
       });
     }
 
-    const history = Object.entries(grouped).map(([month, entries]) => ({ month, entries }));
+    const history = Array.from(grouped.entries()).map(([month, entries]) => ({ month, entries }));
     res.json({ success: true, data: history });
   } catch (e) {
     next(e);

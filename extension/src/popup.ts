@@ -275,10 +275,6 @@ async function saveTotalDonated(total: number) {
 }
 
 async function updateTotalAfterDonation(amount: number) {
-  chrome.storage.local.get(['totalDonatedXLM'], async (result: Record<string, unknown>) => {
-    const current = (result.totalDonatedXLM as number) || 0;
-    await saveTotalDonated(current + amount);
-  });
   chrome.storage.local.get(
     ["totalDonatedXLM"],
     async (result: Record<string, unknown>) => {
@@ -358,10 +354,6 @@ async function connectWallet() {
 
     // Fetch total donated from backend
     const profile = await fetchProfile(publicKey);
-    let total = 0;
-    if (profile?.data?.totalDonatedXLM || profile?.totalDonatedXLM) {
-      total = parseFloat(profile.data?.totalDonatedXLM || profile.totalDonatedXLM) || 0;
-    }
     const profileData = profile?.data ?? profile;
     const total = Number.parseFloat(profileData?.totalDonatedXLM || "0") || 0;
     const badgeTier = Array.isArray(profileData?.badges)
