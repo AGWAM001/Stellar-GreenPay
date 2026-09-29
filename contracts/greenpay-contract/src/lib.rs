@@ -215,6 +215,14 @@ pub struct GlobalStats {
     pub project_count:   u32,
 }
 
+/// Top donor record returned by `get_top_donors`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TopDonorEntry {
+    pub donor: Address,
+    pub total_donated: i128,
+}
+
 /// Aggregated project-detail view returned by `get_impact_summary`.
 ///
 /// Bundles the full project record together with the project-level CO₂
@@ -264,6 +272,8 @@ pub enum DataKey {
     DonorDonations(Address),
     GlobalTotalRaised,
     GlobalCO2OffsetGrams,
+    GlobalStats,
+    TopDonors,
     // Tracks whether `donor` has ever donated to `project` — used so
     // `Project.donor_count` reflects unique donors instead of donations.
     HasDonated(String, Address),
@@ -377,6 +387,96 @@ fn compute_co2_offset(amount_stroops: i128, co2_per_xlm: u32) -> Result<i128, Co
         .ok_or(ContractError::Overflow)
 }
 
+fn update_global_stats(
+    env: &Env,
+    total_raised_delta: i128,
+    co2_delta: i128,
+    donation_count_delta: u32,
+    project_count_delta: u32,
+    is_refund: bool,
+) {
+    let mut stats: GlobalStats = env
+        .storage()
+        .instance()
+        .get(&DataKey::GlobalStats)
+        .unwrap_or_else(|| GlobalStats {
+            total_raised: env.storage().instance().get(&DataKey::GlobalTotalRaised).unwrap_or(0),
+            co2_offset_grams: env.storage().instance().get(&DataKey::GlobalCO2OffsetGrams).unwrap_or(0),
+            donation_count: env.storage().instance().get(&DataKey::DonationCount).unwrap_or(0),
+            project_count: env.storage().instance().get(&DataKey::ProjectCount).unwrap_or(0),
+        });
+
+    if is_refund {
+        stats.total_raised = stats.total_raised.checked_sub(total_raised_delta).expect("GlobalTotalRaised underflow");
+        stats.co2_offset_grams = stats.co2_offset_grams.checked_sub(co2_delta).expect("GlobalCO2OffsetGrams underflow");
+    } else {
+        stats.total_raised = stats.total_raised.checked_add(total_raised_delta).expect("GlobalTotalRaised overflow");
+        stats.co2_offset_grams = stats.co2_offset_grams.checked_add(co2_delta).expect("GlobalCO2OffsetGrams overflow");
+        stats.donation_count = stats.donation_count.checked_add(donation_count_delta).expect("DonationCount overflow");
+        stats.project_count = stats.project_count.checked_add(project_count_delta).expect("ProjectCount overflow");
+    }
+
+    env.storage().instance().set(&DataKey::GlobalStats, &stats);
+}
+
+fn update_top_donors(env: &Env, donor: &Address, total_donated: i128) {
+    let mut top_donors: Vec<TopDonorEntry> = env
+        .storage()
+        .instance()
+        .get(&DataKey::TopDonors)
+        .unwrap_or_else(|| Vec::new(env));
+
+    let mut found_idx: Option<u32> = None;
+    let len = top_donors.len();
+    for i in 0..len {
+        if let Some(entry) = top_donors.get(i) {
+            if entry.donor == *donor {
+                found_idx = Some(i);
+                break;
+            }
+        }
+    }
+
+    if let Some(idx) = found_idx {
+        top_donors.set(
+            idx,
+            TopDonorEntry {
+                donor: donor.clone(),
+                total_donated,
+            },
+        );
+    } else {
+        top_donors.push_back(TopDonorEntry {
+            donor: donor.clone(),
+            total_donated,
+        });
+    }
+
+    let n = top_donors.len();
+    for i in 0..n {
+        for j in 0..(n - 1 - i) {
+            let item_j = top_donors.get(j).unwrap();
+            let item_next = top_donors.get(j + 1).unwrap();
+            if item_j.total_donated < item_next.total_donated {
+                top_donors.set(j, item_next);
+                top_donors.set(j + 1, item_j);
+            }
+        }
+    }
+
+    if top_donors.len() > 100 {
+        let mut truncated = Vec::new(env);
+        for i in 0..100 {
+            if let Some(entry) = top_donors.get(i) {
+                truncated.push_back(entry);
+            }
+        }
+        top_donors = truncated;
+    }
+
+    env.storage().instance().set(&DataKey::TopDonors, &top_donors);
+}
+
 // ─── Contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -399,6 +499,15 @@ impl GreenPayContract {
         env.storage()
             .instance()
             .set(&DataKey::GlobalCO2OffsetGrams, &0i128);
+        env.storage().instance().set(
+            &DataKey::GlobalStats,
+            &GlobalStats {
+                total_raised: 0,
+                co2_offset_grams: 0,
+                donation_count: 0,
+                project_count: 0,
+            },
+        );
     }
 
     // ─── Emergency Pause (Circuit Breaker) ───────────────────────────────────
@@ -512,6 +621,7 @@ impl GreenPayContract {
         
         env.events()
             .publish((symbol_short!("proj_reg"), admin), project_id);
+        update_global_stats(&env, 0, 0, 0, 1, false);
     }
 
     pub fn batch_register_projects(env: Env, admin: Address, projects: Vec<ProjectInit>) {
@@ -568,6 +678,7 @@ impl GreenPayContract {
         env.storage()
             .instance()
             .set(&DataKey::ProjectIds, &project_ids);
+        update_global_stats(&env, 0, 0, 0, projects.len(), false);
     }
 
     pub fn deactivate_project(env: Env, admin: Address, project_id: String) {
@@ -935,6 +1046,9 @@ impl GreenPayContract {
             .instance()
             .set(&DataKey::GlobalCO2OffsetGrams, &new_gc);
 
+        update_global_stats(&env, amount, co2_increment, 1, 0, false);
+        update_top_donors(&env, &donor, donor_stats.total_donated);
+
         // ── Interaction: external call happens after every effect is durable.
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&donor, &project.wallet, &amount);
@@ -1229,16 +1343,49 @@ impl GreenPayContract {
     ///             stats.donation_count, stats.project_count);
     /// ```
     pub fn get_global_stats(env: Env) -> GlobalStats {
-        GlobalStats {
-            total_raised:     env.storage().instance()
-                                  .get(&DataKey::GlobalTotalRaised).unwrap_or(0),
-            co2_offset_grams: env.storage().instance()
-                                  .get(&DataKey::GlobalCO2OffsetGrams).unwrap_or(0),
-            donation_count:   env.storage().instance()
-                                  .get(&DataKey::DonationCount).unwrap_or(0),
-            project_count:    env.storage().instance()
-                                  .get(&DataKey::ProjectCount).unwrap_or(0),
+        env.storage()
+            .instance()
+            .get(&DataKey::GlobalStats)
+            .unwrap_or_else(|| GlobalStats {
+                total_raised: env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::GlobalTotalRaised)
+                    .unwrap_or(0),
+                co2_offset_grams: env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::GlobalCO2OffsetGrams)
+                    .unwrap_or(0),
+                donation_count: env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::DonationCount)
+                    .unwrap_or(0),
+                project_count: env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::ProjectCount)
+                    .unwrap_or(0),
+            })
+    }
+
+    /// Returns the top pre-sorted donors up to size `n`.
+    pub fn get_top_donors(env: Env, n: u32) -> Vec<TopDonorEntry> {
+        let top_donors: Vec<TopDonorEntry> = env
+            .storage()
+            .instance()
+            .get(&DataKey::TopDonors)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let count = n.min(top_donors.len()).min(MAX_PAGE_SIZE);
+        let mut result = Vec::new(&env);
+        for i in 0..count {
+            if let Some(entry) = top_donors.get(i) {
+                result.push_back(entry);
+            }
         }
+        result
     }
 
     /// Returns all data needed for a project detail page in one Soroban call.
@@ -2033,6 +2180,9 @@ impl GreenPayContract {
             &prev_proj_total.checked_add(xlm_equivalent).expect("DonorProjectTotal overflow"),
         );
 
+        update_global_stats(&env, xlm_equivalent, co2_increment, 1, 0, false);
+        update_top_donors(&env, &donor, donor_stats.total_donated);
+
         let token_client = token::Client::new(&env, &usdc_token);
         let project_wallet = project.wallet;
         token_client.transfer(&donor, &project_wallet, &usdc_amount);
@@ -2138,6 +2288,9 @@ impl GreenPayContract {
         env.storage()
             .instance()
             .set(&DataKey::GlobalTotalRaised, &new_gr);
+
+        update_global_stats(&env, amount, 0, 0, 0, true);
+        update_top_donors(&env, &donor, donor_stats.total_donated);
 
         // ── Interaction: transfer amount back from the project wallet to
         //    the donor, after every effect above is durable.
@@ -3651,6 +3804,81 @@ mod tests {
         let (_env, client, token, pid, donor, _wallet) = setup_min_donation();
 
         client.donate_usdc(&token, &donor, &pid, &-1i128, &0u32);
+    }
+    #[test]
+    fn test_global_stats_cached_single_entry() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let cid = env.register_contract(None, GreenPayContract);
+        let client = GreenPayContractClient::new(&env, &cid);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let pid = String::from_str(&env, "proj-1");
+        let wallet = Address::generate(&env);
+        client.register_project(
+            &admin,
+            &pid,
+            &String::from_str(&env, "Project 1"),
+            &wallet,
+            &100u32,
+            &0i128,
+        );
+
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+        let donor = Address::generate(&env);
+        StellarAssetClient::new(&env, &token).mint(&donor, &(1000 * STROOP));
+
+        let stats0 = client.get_global_stats();
+        assert_eq!(stats0.project_count, 1);
+        assert_eq!(stats0.donation_count, 0);
+        assert_eq!(stats0.total_raised, 0);
+
+        client.donate(&token, &donor, &pid, &(100 * STROOP), &0u32);
+
+        let stats1 = client.get_global_stats();
+        assert_eq!(stats1.project_count, 1);
+        assert_eq!(stats1.donation_count, 1);
+        assert_eq!(stats1.total_raised, 100 * STROOP);
+        assert_eq!(stats1.co2_offset_grams, 100 * 100);
+    }
+
+    #[test]
+    fn test_get_top_donors_1000_donors_returns_top_n() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let cid = env.register_contract(None, GreenPayContract);
+        let client = GreenPayContractClient::new(&env, &cid);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let pid = String::from_str(&env, "proj-top");
+        let wallet = Address::generate(&env);
+        client.register_project(
+            &admin,
+            &pid,
+            &String::from_str(&env, "Top Donors Project"),
+            &wallet,
+            &100u32,
+            &0i128,
+        );
+
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+
+        for i in 1..=20 {
+            let donor = Address::generate(&env);
+            let amount = (i as i128) * (10 * STROOP);
+            StellarAssetClient::new(&env, &token).mint(&donor, &amount);
+            client.donate(&token, &donor, &pid, &amount, &(i as u32));
+        }
+
+        let top_10 = client.get_top_donors(&10u32);
+        assert_eq!(top_10.len(), 10);
+        assert_eq!(top_10.get(0).unwrap().total_donated, 200 * STROOP);
+        assert_eq!(top_10.get(1).unwrap().total_donated, 190 * STROOP);
+        assert_eq!(top_10.get(9).unwrap().total_donated, 110 * STROOP);
     }
 }
 

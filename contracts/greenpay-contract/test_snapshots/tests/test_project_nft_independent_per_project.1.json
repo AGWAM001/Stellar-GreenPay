@@ -590,6 +590,51 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "GlobalStats"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "co2_offset_grams"
+                            },
+                            "val": {
+                              "i128": "12600"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "donation_count"
+                            },
+                            "val": {
+                              "u32": 2
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "project_count"
+                            },
+                            "val": {
+                              "u32": 2
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "total_raised"
+                            },
+                            "val": {
+                              "i128": "1510000000"
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "GlobalTotalRaised"
                           }
                         ]
@@ -961,6 +1006,39 @@
                             "val": {
                               "string": "proj-001"
                             }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "TopDonors"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "donor"
+                                },
+                                "val": {
+                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "total_donated"
+                                },
+                                "val": {
+                                  "i128": "1510000000"
+                                }
+                              }
+                            ]
                           }
                         ]
                       }
