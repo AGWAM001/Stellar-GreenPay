@@ -14,6 +14,9 @@
   },
   "host_permissions": [
     "<all_urls>"
+    "https://api.stellar-greenpay.app/*",
+    "https://greenpay.app/*",
+    "https://staging.greenpay.app/*"
   ],
   "content_scripts": [
     {

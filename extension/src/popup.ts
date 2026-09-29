@@ -279,6 +279,42 @@ async function updateTotalAfterDonation(amount: number) {
     const current = (result.totalDonatedXLM as number) || 0;
     await saveTotalDonated(current + amount);
   });
+  chrome.storage.local.get(
+    ["totalDonatedXLM"],
+    async (result: Record<string, unknown>) => {
+      const current = (result.totalDonatedXLM as number) || 0;
+      const total = current + amount;
+      const badgeTier = total >= 2000
+        ? "earth"
+        : total >= 500
+          ? "forest"
+          : total >= 100
+            ? "tree"
+            : total >= 10
+              ? "seedling"
+              : null;
+      await saveTotalDonated(total);
+      renderDonorStats(total, badgeTier);
+    },
+  );
+}
+
+function renderDonorStats(totalXLM: number, badgeTier: string | null) {
+  const totalElement = document.getElementById("donor-total");
+  const tierElement = document.getElementById("donor-badge-tier");
+  const tierLabels: Record<string, string> = {
+    seedling: "Seedling",
+    tree: "Tree",
+    forest: "Forest",
+    earth: "Earth",
+  };
+
+  if (totalElement) {
+    totalElement.textContent = `${totalXLM.toLocaleString(undefined, { maximumFractionDigits: 7 })} XLM`;
+  }
+  if (tierElement) {
+    tierElement.textContent = badgeTier ? tierLabels[badgeTier] || badgeTier : "No badge";
+  }
 }
 
 // ==================== PROFILE API ====================
@@ -326,6 +362,12 @@ async function connectWallet() {
     if (profile?.data?.totalDonatedXLM || profile?.totalDonatedXLM) {
       total = parseFloat(profile.data?.totalDonatedXLM || profile.totalDonatedXLM) || 0;
     }
+    const profileData = profile?.data ?? profile;
+    const total = Number.parseFloat(profileData?.totalDonatedXLM || "0") || 0;
+    const badgeTier = Array.isArray(profileData?.badges)
+      ? profileData.badges[0]?.tier || null
+      : null;
+    renderDonorStats(total, badgeTier);
     await saveTotalDonated(total);
 
   } catch (err: any) {
@@ -488,6 +530,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       window.location.href = 'settings.html';
     });
   }
+
+  document.getElementById("connect-btn")?.addEventListener("click", connectWallet);
 
   initProjectSearch();
   initProjectListKeyNav();
