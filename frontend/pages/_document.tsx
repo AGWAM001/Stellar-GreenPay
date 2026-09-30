@@ -27,16 +27,18 @@ class MyDocument extends Document<Props> {
 
   render() {
     const { nonce } = this.props;
-    // Pre-hydration FOUC prevention. THEME_INIT_SCRIPT reads the
-    // `greenpay:theme` value from localStorage (falling back to
-    // prefers-color-scheme) and applies (or removes) the `.dark` class on
-    // <html> BEFORE React mounts, so the first paint matches the user's
-    // saved palette. It lives in `lib/theme.tsx` next to the provider so
-    // both always agree on the storage key.
+    // Pre-hydration FOUC prevention. Two inline scripts run before React
+    // mounts and read localStorage directly:
+    //  - the first sets `<html lang>` to the stored locale (or the
+    //    browser's language), mirroring `resolveInitialLocale()` /
+    //    `applyLocaleToDocument()` in `lib/i18n.tsx`, including the
+    //    migration off the legacy `"locale"` key;
+    //  - the second applies (or removes) the `.dark` class, mirroring
+    //    `THEME_INIT_SCRIPT` in `lib/theme.tsx` using `greenpay:theme`.
+    // `lang="en"` on <Html> stays as the no-JS / SSR fallback value.
     return (
       <Html lang="en">
         <Head nonce={nonce}>
-          <title>Stellar GreenPay</title>
           {/* The inline body script below is statically stringified — it
               reads `localStorage` directly rather than DOM meta tags, so
               no `<meta name="csp-nonce">` echo is needed here. The script
@@ -44,6 +46,12 @@ class MyDocument extends Document<Props> {
               accept it. */}
         </Head>
         <body>
+          <script
+            nonce={nonce}
+            dangerouslySetInnerHTML={{
+              __html: `(function(){try{var k="greenpay:locale";var legacy="locale";var supported=["en","es","fr"];var v=null;try{v=window.localStorage.getItem(k);if(supported.indexOf(v)<0){var l=window.localStorage.getItem(legacy);if(supported.indexOf(l)>=0){v=l;window.localStorage.setItem(k,l);window.localStorage.removeItem(legacy)}else{v=null}}}catch(e){v=null}if(supported.indexOf(v)<0){var c=(window.navigator.languages||[]).concat(window.navigator.language);v="en";for(var i=0;i<c.length;i++){var b=String(c[i]||"").slice(0,2).toLowerCase();if(supported.indexOf(b)>=0){v=b;break}}}document.documentElement.lang=v}catch(e){}})();`,
+            }}
+          />
           <script
             nonce={nonce}
             dangerouslySetInnerHTML={{
