@@ -24,6 +24,7 @@ const { createCorsMiddleware, getAllowedOrigins } = require("./middleware/corsPo
 const { createRateLimiter } = require("./middleware/rateLimiter");
 const projectsRouter = require("./routes/projects");
 const uploadsRouter = require("./routes/uploads");
+const donationsRouter = require("./routes/donations");
 const statsRouter = require("./routes/stats");
 
 const app = express();
@@ -101,8 +102,10 @@ app.use("/api/v1/health", healthRouter);
 app.use("/api/readiness", readinessRouter);
 app.use("/api/projects", projectsRouter);
 app.use("/api/uploads", uploadsRouter);
+app.use("/api/donations", donationsRouter);
 app.use("/api/v1/projects", projectsRouter);
 app.use("/api/v1/uploads", uploadsRouter);
+app.use("/api/v1/donations", donationsRouter);
 app.use("/api/stats", statsRouter);
 app.use("/api/v1/stats", statsRouter);
 
@@ -131,6 +134,10 @@ app.get("/api/csrf-token", csrfTokenHandler);
 app.get("/api/v1/csrf-token", csrfTokenHandler);
 
 app.use("/api/impact", require("./routes/impact"));
+app.use("/api/subscriptions", require("./routes/subscriptions"));
+app.use("/api/v1/subscriptions", require("./routes/subscriptions"));
+app.use("/api/referrals", require("./routes/referrals"));
+app.use("/api/v1/referrals", require("./routes/referrals"));
 // Recurring donation schedules are the source of truth for mobile (#1059):
 // the app reads them from here and treats AsyncStorage as an offline cache.
 app.use("/api/recurring-donations", require("./routes/recurringDonations"));
@@ -170,6 +177,9 @@ async function startServer() {
 
   const { start: startTokenCleanupQueue } = require("./services/tokenCleanupQueue");
   await startTokenCleanupQueue();
+
+  const { start: startDonationPushQueue } = require("./services/donationPushQueue");
+  await startDonationPushQueue();
 
   startIndexer(io).catch(err => logger.error({ event: "indexer_startup_error", err }, err.message));
 
