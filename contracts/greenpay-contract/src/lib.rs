@@ -207,6 +207,28 @@ pub struct ImpactSummary {
 }
 
 #[contracttype]
+#[derive(Clone, Debug)]
+pub struct MatchPledge {
+    pub project_id: String,
+    pub matcher: Address,
+    pub cap_xlm: i128,
+    pub matched_amount: i128,
+    pub deadline_ledger: u32,
+    pub active: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ActiveMatchStatus {
+    pub has_active_match: bool,
+    pub matcher: Option<Address>,
+    pub cap_xlm: i128,
+    pub matched_amount: i128,
+    pub remaining_cap_xlm: i128,
+    pub deadline_ledger: u32,
+}
+
+#[contracttype]
 pub enum DataKey {
     Admin,
     Project(String),
@@ -233,6 +255,8 @@ pub enum DataKey {
     ProjectMilestoneNFT(String, Address),
     // Metadata IPFS storage
     ProjectMetadata(String),
+    // Match pledge: 2x donation matching offer per project
+    MatchPledge(String),
     // Contract upgrade and multi-currency support
     ContractWasmHash,
     USDCTokenAddress,
@@ -718,22 +742,53 @@ impl GreenPayContract {
         donor_donations.push_back(dc);
         env.storage().instance().set(&DataKey::DonorDonations(donor.clone()), &donor_donations);
 
+        // ── Donation matching (2x match pledge):
+        // If there is an active match pledge for this project that has not expired,
+        // match incoming donations 1:1 (i.e. doubling the donation 2x match) up to the cap.
+        let match_key = DataKey::MatchPledge(project_id.clone());
+        let mut matched_amount: i128 = 0;
+        let mut pledge_matcher: Option<Address> = None;
+        if let Some(mut pledge) = env.storage().instance().get::<_, MatchPledge>(&match_key) {
+            let current_ledger = env.ledger().sequence();
+            if pledge.active && current_ledger <= pledge.deadline_ledger {
+                let remaining_cap = pledge.cap_xlm.checked_sub(pledge.matched_amount).unwrap_or(0);
+                if remaining_cap > 0 {
+                    matched_amount = amount.min(remaining_cap);
+                    pledge.matched_amount = pledge
+                        .matched_amount
+                        .checked_add(matched_amount)
+                        .expect("Pledge matched_amount overflow");
+                    if pledge.matched_amount >= pledge.cap_xlm {
+                        pledge.active = false;
+                    }
+                    env.storage().instance().set(&match_key, &pledge);
+                    pledge_matcher = Some(pledge.matcher.clone());
+                }
+            }
+        }
+
+        let total_credited = amount.checked_add(matched_amount).expect("Total credited overflow");
         let gr: i128 = env
             .storage()
             .instance()
             .get(&DataKey::GlobalTotalRaised)
             .unwrap_or(0);
-        let new_gr = gr.checked_add(amount).expect("GlobalTotalRaised overflow");
+        let new_gr = gr.checked_add(total_credited).expect("GlobalTotalRaised overflow");
         env.storage()
             .instance()
             .set(&DataKey::GlobalTotalRaised, &new_gr);
+
+        let total_co2_units = total_credited / STROOP;
+        let total_co2_increment = total_co2_units
+            .checked_mul(project.co2_per_xlm as i128)
+            .expect("Total CO2 increment overflow");
 
         let gc: i128 = env
             .storage()
             .instance()
             .get(&DataKey::GlobalCO2OffsetGrams)
             .unwrap_or(0);
-        let new_gc = gc.checked_add(co2_increment).expect("GlobalCO2 overflow");
+        let new_gc = gc.checked_add(total_co2_increment).expect("GlobalCO2 overflow");
         env.storage()
             .instance()
             .set(&DataKey::GlobalCO2OffsetGrams, &new_gc);
@@ -741,6 +796,17 @@ impl GreenPayContract {
         // ── Interaction: external call happens after every effect is durable.
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&donor, &project.wallet, &amount);
+
+        // If matched by a pledge sponsor, transfer the matching funds from the matcher to the project
+        if matched_amount > 0 {
+            if let Some(ref matcher_addr) = pledge_matcher {
+                token_client.transfer(matcher_addr, &project.wallet, &matched_amount);
+                env.events().publish(
+                    (symbol_short!("matched"), matcher_addr.clone(), project_id.clone()),
+                    (matched_amount, donor.clone()),
+                );
+            }
+        }
 
         env.events().publish(
             (symbol_short!("donated"), donor.clone(), project_id.clone()),
@@ -1810,6 +1876,157 @@ impl GreenPayContract {
     /// Get the current contract WASM hash.
     pub fn get_contract_wasm_hash(env: Env) -> Option<BytesN<32>> {
         env.storage().instance().get(&DataKey::ContractWasmHash)
+    }
+
+    // ─── Donation matching program (2x match pledges) ─────────────────────────
+
+    /// Create a new donation match pledge for a project.
+    /// The matcher pledges that they will double (2x match) all donations to the project up to `cap_xlm`.
+    /// `cap_xlm` is in stroops (1 XLM = 10_000_000 stroops).
+    pub fn create_match_pledge(
+        env: Env,
+        matcher: Address,
+        project_id: String,
+        cap_xlm: i128,
+        deadline_ledger: u32,
+    ) {
+        matcher.require_auth();
+        if Self::is_paused(env.clone()) {
+            panic!("Contract is paused");
+        }
+        if cap_xlm <= 0 {
+            panic!("Cap XLM must be positive");
+        }
+        if deadline_ledger <= env.ledger().sequence() {
+            panic!("Deadline must be in the future");
+        }
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::Project(project_id.clone()))
+        {
+            panic!("Project not found");
+        }
+
+        let match_key = DataKey::MatchPledge(project_id.clone());
+        if let Some(existing) = env.storage().instance().get::<_, MatchPledge>(&match_key) {
+            if existing.active && env.ledger().sequence() <= existing.deadline_ledger && existing.matched_amount < existing.cap_xlm {
+                panic!("Active match pledge already exists for this project");
+            }
+        }
+
+        let pledge = MatchPledge {
+            project_id: project_id.clone(),
+            matcher: matcher.clone(),
+            cap_xlm,
+            matched_amount: 0,
+            deadline_ledger,
+            active: true,
+        };
+
+        env.storage().instance().set(&match_key, &pledge);
+        env.events().publish(
+            (symbol_short!("pledge_cr"), matcher, project_id),
+            (cap_xlm, deadline_ledger),
+        );
+    }
+
+    /// Admin or Matcher can cancel an active match pledge.
+    pub fn cancel_match_pledge(env: Env, caller: Address, project_id: String) {
+        caller.require_auth();
+        let match_key = DataKey::MatchPledge(project_id.clone());
+        let mut pledge: MatchPledge = env
+            .storage()
+            .instance()
+            .get(&match_key)
+            .expect("Match pledge not found");
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+
+        if caller != stored_admin && caller != pledge.matcher {
+            panic!("Only admin or matcher can cancel match pledge");
+        }
+
+        pledge.active = false;
+        env.storage().instance().set(&match_key, &pledge);
+        env.events().publish(
+            (symbol_short!("pledge_cn"), caller, project_id),
+            pledge.matched_amount,
+        );
+    }
+
+    /// Admin endpoint to set/update a match pledge status directly.
+    pub fn set_match_pledge_status(
+        env: Env,
+        admin: Address,
+        project_id: String,
+        active: bool,
+    ) {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if stored_admin != admin {
+            panic!("Only admin can set match pledge status");
+        }
+
+        let match_key = DataKey::MatchPledge(project_id.clone());
+        let mut pledge: MatchPledge = env
+            .storage()
+            .instance()
+            .get(&match_key)
+            .expect("Match pledge not found");
+
+        pledge.active = active;
+        env.storage().instance().set(&match_key, &pledge);
+        env.events().publish(
+            (symbol_short!("pledge_st"), admin, project_id),
+            active,
+        );
+    }
+
+    /// Retrieve the match pledge for a project.
+    pub fn get_match_pledge(env: Env, project_id: String) -> Option<MatchPledge> {
+        env.storage().instance().get(&DataKey::MatchPledge(project_id))
+    }
+
+    /// Get current active match pledge status for a project.
+    pub fn get_active_match_status(env: Env, project_id: String) -> ActiveMatchStatus {
+        let match_key = DataKey::MatchPledge(project_id);
+        if let Some(pledge) = env.storage().instance().get::<_, MatchPledge>(&match_key) {
+            let current_ledger = env.ledger().sequence();
+            let is_active = pledge.active
+                && current_ledger <= pledge.deadline_ledger
+                && pledge.matched_amount < pledge.cap_xlm;
+            let remaining = if pledge.cap_xlm > pledge.matched_amount {
+                pledge.cap_xlm - pledge.matched_amount
+            } else {
+                0
+            };
+            ActiveMatchStatus {
+                has_active_match: is_active,
+                matcher: Some(pledge.matcher),
+                cap_xlm: pledge.cap_xlm,
+                matched_amount: pledge.matched_amount,
+                remaining_cap_xlm: remaining,
+                deadline_ledger: pledge.deadline_ledger,
+            }
+        } else {
+            ActiveMatchStatus {
+                has_active_match: false,
+                matcher: None,
+                cap_xlm: 0,
+                matched_amount: 0,
+                remaining_cap_xlm: 0,
+                deadline_ledger: 0,
+            }
+        }
     }
 }
 
@@ -3044,5 +3261,135 @@ mod tests {
 
         assert_eq!(client.get_project(&pid).total_raised, amount);
         assert_eq!(client.get_donation_count(), 1);
+    }
+
+    // ─── Match pledge tests (#1293) ──────────────────────────────────────────
+
+    #[test]
+    fn test_create_and_query_match_pledge() {
+        let (env, _cid, client, _admin, pid) = setup();
+        let matcher = Address::generate(&env);
+        let cap = 1000 * STROOP;
+        let deadline = env.ledger().sequence() + 10_000;
+
+        client.create_match_pledge(&matcher, &pid, &cap, &deadline);
+
+        let pledge = client.get_match_pledge(&pid).expect("Pledge must exist");
+        assert_eq!(pledge.project_id, pid);
+        assert_eq!(pledge.matcher, matcher);
+        assert_eq!(pledge.cap_xlm, cap);
+        assert_eq!(pledge.matched_amount, 0);
+        assert_eq!(pledge.deadline_ledger, deadline);
+        assert!(pledge.active);
+
+        let status = client.get_active_match_status(&pid);
+        assert!(status.has_active_match);
+        assert_eq!(status.matcher, Some(matcher));
+        assert_eq!(status.cap_xlm, cap);
+        assert_eq!(status.matched_amount, 0);
+        assert_eq!(status.remaining_cap_xlm, cap);
+        assert_eq!(status.deadline_ledger, deadline);
+    }
+
+    #[test]
+    fn test_donate_executes_match_pledge_and_records_matched_amounts() {
+        let (env, _cid, client, _admin, pid) = setup();
+        let matcher = Address::generate(&env);
+        let donor = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+        let token_client = StellarAssetClient::new(&env, &token);
+
+        let cap = 50 * STROOP; // 50 XLM match cap
+        let deadline = env.ledger().sequence() + 10_000;
+        client.create_match_pledge(&matcher, &pid, &cap, &deadline);
+
+        // Mint token to matcher and donor
+        token_client.mint(&matcher, &(100 * STROOP));
+        token_client.mint(&donor, &(100 * STROOP));
+
+        let project_wallet = client.get_project(&pid).wallet;
+
+        // Donate 30 XLM: should match 30 XLM from matcher
+        let donation_amount = 30 * STROOP;
+        client.donate(&token, &donor, &pid, &donation_amount, &0u32);
+
+        let project = client.get_project(&pid);
+        // Project gets 30 XLM direct + 30 XLM matched = 60 XLM total raised
+        assert_eq!(project.total_raised, 60 * STROOP);
+
+        let native_token = soroban_sdk::token::Client::new(&env, &token);
+        assert_eq!(native_token.balance(&project_wallet), 60 * STROOP);
+        assert_eq!(native_token.balance(&donor), 70 * STROOP);
+        assert_eq!(native_token.balance(&matcher), 70 * STROOP);
+
+        let pledge = client.get_match_pledge(&pid).unwrap();
+        assert_eq!(pledge.matched_amount, 30 * STROOP);
+        assert!(pledge.active);
+
+        let status = client.get_active_match_status(&pid);
+        assert!(status.has_active_match);
+        assert_eq!(status.remaining_cap_xlm, 20 * STROOP);
+
+        // Second donation of 30 XLM: only 20 XLM remaining in match cap
+        client.donate(&token, &donor, &pid, &donation_amount, &1u32);
+
+        let project_after = client.get_project(&pid);
+        // 60 XLM previous + 30 XLM donation + 20 XLM match = 110 XLM
+        assert_eq!(project_after.total_raised, 110 * STROOP);
+        assert_eq!(native_token.balance(&project_wallet), 110 * STROOP);
+        assert_eq!(native_token.balance(&matcher), 50 * STROOP);
+
+        let status_after = client.get_active_match_status(&pid);
+        assert!(!status_after.has_active_match);
+        assert_eq!(status_after.remaining_cap_xlm, 0);
+    }
+
+    #[test]
+    fn test_cancel_match_pledge_by_matcher_and_admin() {
+        let (env, _cid, client, admin, pid) = setup();
+        let matcher = Address::generate(&env);
+        let cap = 100 * STROOP;
+        let deadline = env.ledger().sequence() + 10_000;
+
+        client.create_match_pledge(&matcher, &pid, &cap, &deadline);
+        assert!(client.get_active_match_status(&pid).has_active_match);
+
+        // Matcher cancels
+        client.cancel_match_pledge(&matcher, &pid);
+        assert!(!client.get_active_match_status(&pid).has_active_match);
+
+        // Admin re-enables / sets status
+        client.set_match_pledge_status(&admin, &pid, &true);
+        assert!(client.get_active_match_status(&pid).has_active_match);
+
+        // Admin cancels
+        client.cancel_match_pledge(&admin, &pid);
+        assert!(!client.get_active_match_status(&pid).has_active_match);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only admin or matcher can cancel match pledge")]
+    fn test_cancel_match_pledge_unauthorized_fails() {
+        let (env, _cid, client, _admin, pid) = setup();
+        let matcher = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let cap = 100 * STROOP;
+        let deadline = env.ledger().sequence() + 10_000;
+
+        client.create_match_pledge(&matcher, &pid, &cap, &deadline);
+        client.cancel_match_pledge(&attacker, &pid);
+    }
+
+    #[test]
+    #[should_panic(expected = "Active match pledge already exists for this project")]
+    fn test_duplicate_active_pledge_fails() {
+        let (env, _cid, client, _admin, pid) = setup();
+        let matcher = Address::generate(&env);
+        let cap = 100 * STROOP;
+        let deadline = env.ledger().sequence() + 10_000;
+
+        client.create_match_pledge(&matcher, &pid, &cap, &deadline);
+        client.create_match_pledge(&matcher, &pid, &cap, &deadline);
     }
 }

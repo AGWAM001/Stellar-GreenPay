@@ -237,6 +237,29 @@ export async function fetchProjectMatches(projectId: string) {
   return data.data;
 }
 
+export async function createAdminMatchPledge(
+  projectId: string,
+  payload: { matcherAddress: string; capXLM: string | number; multiplier?: number; expiresAt: string },
+  adminToken?: string,
+) {
+  const headers = adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined;
+  const { data } = await api.post<{ success: boolean; data: any }>(
+    `/api/admin/projects/${projectId}/match-pledges`,
+    payload,
+    { headers },
+  );
+  return data.data;
+}
+
+export async function cancelAdminMatchPledge(id: string, adminToken?: string) {
+  const headers = adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined;
+  const { data } = await api.delete<{ success: boolean; data: any }>(
+    `/api/admin/match-pledges/${id}`,
+    { headers },
+  );
+  return data.data;
+}
+
 // ── Donations ─────────────────────────────────────────────────────────────────
 /**
  * Persist a completed donation in the backend after the on-chain transaction succeeds.
