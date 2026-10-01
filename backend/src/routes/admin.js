@@ -4,9 +4,7 @@ const router = express.Router();
 const pool = require("../db/pool");
 const { signToken, signAdminToken, adminRequired } = require("../middleware/auth");
 const { createRateLimiter } = require("../middleware/rateLimiter");
-const { logAdminAction } = require("../services/audit");
-const { v4: uuid } = require("uuid");
-const { buildDigestHtml, buildDigestText } = require("../services/digestQueue");
+const { buildDigestHtml } = require("../services/digestQueue");
 const {
   getMaxRecurringAmount,
   setMaxRecurringAmount,

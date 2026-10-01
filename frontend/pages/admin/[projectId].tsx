@@ -454,6 +454,7 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
         </div>
         {imageUploadError ? <p className="mb-3 text-sm text-red-600">{imageUploadError}</p> : null}
         {project.imageUrl ? (
+          /* eslint-disable-next-line @next/next/no-img-element */
           <img src={project.imageUrl} alt={`${project.name} banner`} className="h-48 w-full rounded-2xl object-cover" />
         ) : (
           <div className="flex h-48 items-center justify-center rounded-2xl border border-dashed border-forest-200 bg-forest-50 text-sm text-[#5a7a5a]">No banner image yet. Upload one to personalize the project page.</div>
