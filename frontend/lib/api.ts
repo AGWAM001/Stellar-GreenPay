@@ -531,6 +531,28 @@ export async function fetchSubscriberCount(projectId: string) {
   return data.count;
 }
 
+export interface ProjectNotificationSubscription {
+  id: string;
+  projectId: string;
+  projectName: string;
+  email: string;
+  subscribed: boolean;
+}
+
+export async function fetchNotificationSubscriptions(email: string) {
+  const { data } = await api.get<{ success: boolean; data: ProjectNotificationSubscription[] }>(
+    "/api/subscriptions", { params: { email } },
+  );
+  return data.data;
+}
+
+export async function updateNotificationSubscription(id: string, email: string, subscribed: boolean) {
+  const { data } = await api.patch<{ success: boolean; data: ProjectNotificationSubscription }>(
+    `/api/subscriptions/${id}`, { email, subscribed },
+  );
+  return data.data;
+}
+
 // ── Global Stats ─────────────────────────────────────────────────
 export interface GlobalStats {
   totalXLMRaised: string;
@@ -1004,6 +1026,28 @@ export async function updateVerificationRequestStatus(
     `/api/verification-requests/${id}/status`,
     { status, ...(reviewerNotes !== undefined ? { reviewerNotes } : {}) },
     { headers: { Authorization: `Bearer ${adminToken}` } },
+  );
+  return data.data;
+}
+
+// ── Referrals ─────────────────────────────────────────────────────────────────
+export interface ReferralStats {
+  referralCount: number;
+  referralBonusXLM: string;
+  referredBy: string | null;
+}
+
+export async function fetchReferralStats(publicKey: string): Promise<ReferralStats> {
+  const { data } = await api.get<{ success: boolean; data: ReferralStats }>(
+    `/api/referrals/${publicKey}`,
+  );
+  return data.data;
+}
+
+export async function createReferral(referrerAddress: string, referredAddress: string) {
+  const { data } = await api.post<{ success: boolean; data: any }>(
+    "/api/referrals",
+    { referrerAddress, referredAddress },
   );
   return data.data;
 }

@@ -7,6 +7,7 @@ const router = express.Router();
 const pool = require("../db/pool");
 const indexerService = require("../services/indexerService");
 
+
 function getMaxFailedJobs() {
   const parsed = Number.parseInt(process.env.PGBOSS_MAX_FAILED_JOBS ?? "10", 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 10;

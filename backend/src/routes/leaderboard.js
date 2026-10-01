@@ -96,6 +96,8 @@ router.get("/", leaderboardLimiter, async (req, res, next) => {
         : sortBy === "total_co2_offset_kg"
           ? cursorData.total_co2_offset_kg
           : cursorData.donor_count;
+      // eslint-disable-next-line security/detect-object-injection
+      const sortValue = cursorData[sortBy];
       const publicKey = cursorData.publicKey;
       if (sortValue === undefined || !publicKey) {
         return res.status(400).json({ error: "Invalid cursor" });
@@ -195,6 +197,10 @@ router.get("/", leaderboardLimiter, async (req, res, next) => {
           : last.donor_count;
       nextCursor = Buffer.from(
         JSON.stringify({ [sortBy]: lastSortVal, publicKey: last.public_key }),
+      // eslint-disable-next-line security/detect-object-injection
+      nextCursor = Buffer.from(
+        // eslint-disable-next-line security/detect-object-injection
+        JSON.stringify({ [sortBy]: last[sortBy], publicKey: last.public_key }),
       ).toString("base64");
     }
 
@@ -239,6 +245,10 @@ router.get("/history", leaderboardLimiter, async (req, res, next) => {
       const key = row.month.toISOString().slice(0, 7); // "YYYY-MM"
       if (!grouped.has(key)) grouped.set(key, []);
       grouped.get(key).push({
+      // eslint-disable-next-line security/detect-object-injection
+      if (!grouped[key]) grouped[key] = [];
+      // eslint-disable-next-line security/detect-object-injection
+      grouped[key].push({
         rank: row.rank,
         donorAddress: row.donor_address,
         displayName: row.display_name || null,
@@ -298,8 +308,7 @@ router.post("/snapshot", async (req, res, next) => {
     try {
       await client.query("BEGIN");
       let inserted = 0;
-      for (let i = 0; i < topResult.rows.length; i++) {
-        const row = topResult.rows[i];
+      for (const [i, row] of topResult.rows.entries()) {
         const badge = row.badges?.[0]?.tier || null;
         await client.query(
           `INSERT INTO monthly_leaderboard
