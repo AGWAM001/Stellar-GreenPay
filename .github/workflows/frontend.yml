@@ -36,6 +36,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Check locale key parity
+        run: node ../scripts/check-locale-keys.js
+
       - name: Run unit tests with coverage
         run: npm test -- --coverage --ci
 
