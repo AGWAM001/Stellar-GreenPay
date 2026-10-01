@@ -18,6 +18,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/router";
 import { MapContainer, TileLayer, ZoomControl } from "react-leaflet";
 import L from "leaflet";
 import type { ClimateProject } from "@/utils/types";
@@ -63,6 +64,7 @@ interface ProjectMapProps {
 export default function ProjectMap({ projects }: ProjectMapProps) {
   const [viewMode, setViewMode] = useState<'map' | 'list'>('map');
   const [focusedIndex, setFocusedIndex] = useState<number>(-1);
+  const router = useRouter();
 
   // Leaflet needs the CSS — import it once at runtime (not at module level so
   // it doesn't run on the server via accidental imports).
@@ -91,7 +93,7 @@ export default function ProjectMap({ projects }: ProjectMapProps) {
     } else if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       // Navigate to project detail
-      window.location.href = `/projects/${projects[index].id}`;
+      router.push(`/projects/${projects[index].id}`);
     }
   };
 

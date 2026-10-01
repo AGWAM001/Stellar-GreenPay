@@ -531,6 +531,28 @@ export async function fetchSubscriberCount(projectId: string) {
   return data.count;
 }
 
+export interface ProjectNotificationSubscription {
+  id: string;
+  projectId: string;
+  projectName: string;
+  email: string;
+  subscribed: boolean;
+}
+
+export async function fetchNotificationSubscriptions(email: string) {
+  const { data } = await api.get<{ success: boolean; data: ProjectNotificationSubscription[] }>(
+    "/api/subscriptions", { params: { email } },
+  );
+  return data.data;
+}
+
+export async function updateNotificationSubscription(id: string, email: string, subscribed: boolean) {
+  const { data } = await api.patch<{ success: boolean; data: ProjectNotificationSubscription }>(
+    `/api/subscriptions/${id}`, { email, subscribed },
+  );
+  return data.data;
+}
+
 // ── Global Stats ─────────────────────────────────────────────────
 export interface GlobalStats {
   totalXLMRaised: string;
