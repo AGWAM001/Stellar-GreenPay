@@ -10,12 +10,12 @@ import ProjectCard from "@/components/ProjectCard";
 import ImpactCertificate from "@/components/ImpactCertificate";
 import ProjectRating from "@/components/ProjectRating";
 import ReferralSection from "@/components/ReferralSection";
-import { fetchProfile, fetchDonorHistory, fetchProjects } from "@/lib/api";
+import { fetchProfile, fetchDonorHistory, fetchProjects, fetchMyTeam, createTeam, joinTeam } from "@/lib/api";
 import { getDueMonthlySubscriptions } from "@/lib/monthlyGiving";
 import { getXLMBalance, getFriendBotFunding, NETWORK } from "@/lib/stellar";
 import { formatXLM, formatCO2, timeAgo, shortenAddress, badgeEmoji, badgeLabel, calculateStreak } from "@/utils/format";
 import { explorerUrl } from "@/lib/stellar";
-import type { DonorProfile, Donation, ClimateProject, MonthlySubscription } from "@/utils/types";
+import type { DonorProfile, Donation, ClimateProject, MonthlySubscription, Team } from "@/utils/types";
 import { useWishlist } from "@/hooks/useWishlist";
 
 interface DashboardProps { publicKey: string | null; onConnect: (pk: string) => void; }
@@ -44,6 +44,14 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
   const { wishlist } = useWishlist();
   const [showCertificate, setShowCertificate] = useState(false);
   const [pendingRating, setPendingRating] = useState<{ id: string, name: string } | null>(null);
+  const [myTeam, setMyTeam] = useState<Team | null>(null);
+  const [teamLoading, setTeamLoading] = useState(false);
+  const [teamError, setTeamError] = useState<string | null>(null);
+  const [teamForm, setTeamForm] = useState<"none" | "create" | "join">("none");
+  const [newTeamName, setNewTeamName] = useState("");
+  const [joinTeamId, setJoinTeamId] = useState("");
+  const [joinInviteCode, setJoinInviteCode] = useState("");
+  const [teamActionState, setTeamActionState] = useState<"idle" | "saving" | "success" | "error">("idle");
 
   useEffect(() => {
     if (!publicKey) return;
@@ -75,6 +83,14 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
       .catch(console.error)
       .finally(() => setLoading(false));
   }, [publicKey, wishlist]);
+
+  // Fetch the caller's team (if any) for the team-giving card.
+  useEffect(() => {
+    if (!publicKey) return;
+    fetchMyTeam()
+      .then(setMyTeam)
+      .catch(() => setMyTeam(null));
+  }, [publicKey]);
 
   // publicKey is always null during SSR/initial hydration (wallet connection
   // is a client-only interaction), so this is safe to derive directly during
@@ -224,6 +240,45 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
       handlePrintCertificate();
     } finally {
       setCertificateRendering(false);
+    }
+  };
+
+  const handleCreateTeam = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTeamName.trim()) return;
+    setTeamActionState("saving");
+    setTeamError(null);
+    try {
+      const team = await createTeam({ name: newTeamName.trim() });
+      setMyTeam(team);
+      setTeamForm("none");
+      setNewTeamName("");
+      setTeamActionState("success");
+      window.setTimeout(() => setTeamActionState("idle"), 2000);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setTeamError(msg || "Could not create team.");
+      setTeamActionState("error");
+    }
+  };
+
+  const handleJoinTeam = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!joinTeamId.trim() || !joinInviteCode.trim()) return;
+    setTeamActionState("saving");
+    setTeamError(null);
+    try {
+      const team = await joinTeam(joinTeamId.trim(), joinInviteCode.trim());
+      setMyTeam(team);
+      setTeamForm("none");
+      setJoinTeamId("");
+      setJoinInviteCode("");
+      setTeamActionState("success");
+      window.setTimeout(() => setTeamActionState("idle"), 2000);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setTeamError(msg || "Could not join team.");
+      setTeamActionState("error");
     }
   };
 
@@ -431,6 +486,159 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
                   Streak broken? Don&apos;t worry, every donation counts. Start fresh this month!
                 </p>
               </div>
+            )}
+          </div>
+
+          {/* Team giving — combined impact for businesses and groups */}
+          <div className="card shadow-sm border border-forest-100/50">
+            <h2 className="font-display text-lg font-semibold text-forest-900 mb-4 flex items-center gap-2">
+              <span>👥</span> Your Team
+            </h2>
+
+            {teamLoading ? (
+              <div className="animate-pulse h-16 bg-forest-50 rounded-xl" />
+            ) : myTeam ? (
+              <div>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-xl bg-forest-100 flex items-center justify-center text-2xl overflow-hidden flex-shrink-0">
+                      {myTeam.logoUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={myTeam.logoUrl} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        "🌿"
+                      )}
+                    </div>
+                    <div>
+                      <p className="font-semibold text-forest-900 font-body">{myTeam.name}</p>
+                      <p className="text-xs text-[#8aaa8a] dark:text-forest-300 font-body">
+                        👥 {myTeam.memberCount} member{myTeam.memberCount === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                  </div>
+                  <Link href="/leaderboard" className="text-xs font-semibold text-forest-600 hover:underline font-body">
+                    View team leaderboard →
+                  </Link>
+                </div>
+                <div className="mt-4 p-4 rounded-xl bg-forest-50 border border-forest-100 text-center">
+                  <p className="text-[#5a7a5a] dark:text-[#8aaa8a] text-xs font-body uppercase tracking-wider font-bold mb-1">
+                    Your team has donated
+                  </p>
+                  <p className="font-display text-2xl font-bold text-forest-900">
+                    {formatXLM(myTeam.totalDonatedXLM)} XLM
+                  </p>
+                  <p className="text-xs text-[#8aaa8a] dark:text-forest-300 font-body mt-1">
+                    ≈ {formatCO2(Number(myTeam.totalCO2OffsetKg || 0))} CO₂ offset combined
+                  </p>
+                </div>
+              </div>
+            ) : teamForm === "none" ? (
+              <div>
+                <p className="text-sm text-[#5a7a5a] dark:text-[#8aaa8a] font-body mb-4">
+                  Give as a team — combine your company&apos;s or group&apos;s donations under one profile and climb the team leaderboard together.
+                </p>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    onClick={() => setTeamForm("create")}
+                    className="btn-primary text-sm py-2 px-4"
+                  >
+                    Create a team
+                  </button>
+                  <button
+                    onClick={() => setTeamForm("join")}
+                    className="btn-secondary text-sm py-2 px-4"
+                  >
+                    Join with invite code
+                  </button>
+                </div>
+              </div>
+            ) : teamForm === "create" ? (
+              <form onSubmit={handleCreateTeam} className="space-y-3">
+                <div>
+                  <label htmlFor="team-name" className="block text-xs font-bold text-forest-800 uppercase tracking-wider mb-1 opacity-60">
+                    Team name
+                  </label>
+                  <input
+                    id="team-name"
+                    type="text"
+                    required
+                    maxLength={100}
+                    placeholder="e.g. Acme Corp Giving"
+                    value={newTeamName}
+                    onChange={(e) => setNewTeamName(e.target.value)}
+                    className="input-field"
+                  />
+                </div>
+                {teamError && teamActionState === "error" && (
+                  <p className="text-xs text-red-600 font-body">{teamError}</p>
+                )}
+                <div className="flex gap-3">
+                  <button
+                    type="submit"
+                    disabled={teamActionState === "saving" || !newTeamName.trim()}
+                    className="btn-primary text-sm py-2 px-4 disabled:opacity-60"
+                  >
+                    {teamActionState === "saving" ? "Creating…" : teamActionState === "success" ? "Team Created" : "Create Team"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTeamForm("none")}
+                    className="btn-secondary text-sm py-2 px-4"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={handleJoinTeam} className="space-y-3">
+                <div>
+                  <label htmlFor="team-id" className="block text-xs font-bold text-forest-800 uppercase tracking-wider mb-1 opacity-60">
+                    Team ID
+                  </label>
+                  <input
+                    id="team-id"
+                    type="text"
+                    required
+                    placeholder="Team ID from your invite"
+                    value={joinTeamId}
+                    onChange={(e) => setJoinTeamId(e.target.value)}
+                    className="input-field"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="invite-code" className="block text-xs font-bold text-forest-800 uppercase tracking-wider mb-1 opacity-60">
+                    Invite code
+                  </label>
+                  <input
+                    id="invite-code"
+                    type="text"
+                    required
+                    placeholder="e.g. acme2026"
+                    value={joinInviteCode}
+                    onChange={(e) => setJoinInviteCode(e.target.value)}
+                    className="input-field"
+                  />
+                </div>
+                {teamError && teamActionState === "error" && (
+                  <p className="text-xs text-red-600 font-body">{teamError}</p>
+                )}
+                <div className="flex gap-3">
+                  <button
+                    type="submit"
+                    disabled={teamActionState === "saving" || !joinTeamId.trim() || !joinInviteCode.trim()}
+                    className="btn-primary text-sm py-2 px-4 disabled:opacity-60"
+                  >
+                    {teamActionState === "saving" ? "Joining…" : teamActionState === "success" ? "Joined!" : "Join team"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTeamForm("none")}
+                    className="btn-secondary text-sm py-2 px-4"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
             )}
           </div>
 

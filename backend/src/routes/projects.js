@@ -1067,6 +1067,22 @@ router.get("/:id", async (req, res, next) => {
       [req.params.id],
     );
 
+    // Fetch the most recent individual reviews for the project detail page.
+    const recentReviewsResult = await pool.query(
+      `SELECT donor_address, rating, review, created_at
+       FROM project_ratings
+       WHERE project_id = $1
+       ORDER BY created_at DESC
+       LIMIT 5`,
+      [req.params.id],
+    );
+    const recentReviews = recentReviewsResult.rows.map((row) => ({
+      donorAddress: row.donor_address,
+      rating: row.rating,
+      review: row.review,
+      createdAt: new Date(row.created_at).toISOString(),
+    }));
+
     // Fetch subscriber count
     const subscriberResult = await pool.query(
       "SELECT COUNT(*)::int AS count FROM project_subscriptions WHERE project_id = $1",
@@ -1140,6 +1156,7 @@ router.get("/:id", async (req, res, next) => {
         activeCampaign: campaigns.find((campaign) => campaign.active) || null,
         averageRating: parseFloat(ratingResult.rows[0]?.avg_rating) || 0,
         ratingCount: parseInt(ratingResult.rows[0]?.count) || 0,
+        recentReviews,
         milestones: milestoneResult.rows.map(mapProjectMilestoneRow),
         followCount,
         isFollowing,

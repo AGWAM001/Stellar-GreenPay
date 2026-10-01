@@ -142,6 +142,15 @@ app.use("/api/v1/referrals", require("./routes/referrals"));
 // the app reads them from here and treats AsyncStorage as an offline cache.
 app.use("/api/recurring-donations", require("./routes/recurringDonations"));
 app.use("/api/v1/recurring-donations", require("./routes/recurringDonations"));
+// Wallet-signature authentication (challenge → signed tx → JWT).
+app.use("/api/auth", require("./routes/auth"));
+app.use("/api/v1/auth", require("./routes/auth"));
+// Project ratings (donor-submitted, wallet-authenticated).
+app.use("/api/ratings", require("./routes/ratings"));
+app.use("/api/v1/ratings", require("./routes/ratings"));
+// Team giving (corporate/group donation profiles).
+app.use("/api/teams", require("./routes/teams"));
+app.use("/api/v1/teams", require("./routes/teams"));
 app.use((req, res) => res.status(404).json({ error: `${req.method} ${req.path} not found` }));
 // Sentry error handler — capture exceptions before the final error middleware
 app.use(sentryErrorMiddleware());

@@ -223,6 +223,81 @@ router.get("/", leaderboardLimiter, async (req, res, next) => {
 });
 
 /**
+ * GET /api/leaderboard/teams
+ * Teams ranked by combined total_donated_xlm across their members — the
+ * team-giving counterpart to the donor leaderboard. A wallet's donations
+ * count toward exactly one team (enforced by a unique index on
+ * team_members.wallet_address), so combined totals never double-count.
+ *
+ * Query params:
+ *   - limit (default 50, max 200)
+ *   - offset (default 0)
+ *   - period (week | month | year | all; default all)
+ */
+router.get("/teams", leaderboardLimiter, async (req, res, next) => {
+  try {
+    const limit = Math.min(
+      Math.max(Number.parseInt(req.query.limit, 10) || 50, 1),
+      200,
+    );
+    const offset = Math.max(Number.parseInt(req.query.offset, 10) || 0, 0);
+    const period = req.query.period || "all";
+
+    let donationWindow = "";
+    if (period === "week") donationWindow = "AND d.created_at >= NOW() - INTERVAL '7 days'";
+    else if (period === "month") donationWindow = "AND d.created_at >= NOW() - INTERVAL '30 days'";
+    else if (period === "year") donationWindow = "AND d.created_at >= NOW() - INTERVAL '1 year'";
+
+    const result = await pool.query(
+      `SELECT t.id, t.name, t.logo_url,
+              COUNT(DISTINCT tm.wallet_address)::int AS member_count,
+              COALESCE(SUM(d.amount_xlm), 0)::NUMERIC AS total_donated_xlm,
+              COALESCE(
+                SUM(
+                  CASE
+                    WHEN pr.raised_xlm > 0 THEN (d.amount_xlm * (pr.co2_offset_kg::numeric / pr.raised_xlm))
+                    ELSE 0
+                  END
+                ),
+                0
+              )::NUMERIC AS total_co2_offset_kg
+       FROM teams t
+       JOIN team_members tm ON tm.team_id = t.id
+       LEFT JOIN donations d ON d.donor_address = tm.wallet_address ${donationWindow}
+       LEFT JOIN projects pr ON pr.id = d.project_id
+       GROUP BY t.id, t.name, t.logo_url
+       HAVING COALESCE(SUM(d.amount_xlm), 0) > 0
+       ORDER BY total_donated_xlm DESC, t.id DESC
+       LIMIT $1 OFFSET $2`,
+      [limit + 1, offset],
+    );
+
+    const rows = result.rows;
+    const hasMore = rows.length > limit;
+    const pageRows = rows.slice(0, limit);
+
+    const entries = pageRows.map((row, i) => ({
+      rank: offset + i + 1,
+      id: row.id,
+      name: row.name,
+      logoUrl: row.logo_url || null,
+      memberCount: row.member_count,
+      totalDonatedXLM: row.total_donated_xlm?.toString() || "0",
+      totalCO2OffsetKg: row.total_co2_offset_kg?.toString() || "0",
+    }));
+
+    res.json({
+      success: true,
+      data: entries,
+      has_more: hasMore,
+      next_offset: hasMore ? offset + limit : null,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/**
  * GET /api/leaderboard/history
  * Returns the monthly leaderboard snapshots, grouped by month descending.
  * Query params:
