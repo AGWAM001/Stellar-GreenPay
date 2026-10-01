@@ -285,6 +285,7 @@ describe("GET /api/projects/:id", () => {
     pool.query.mockResolvedValueOnce({ rows: [MOCK_PROJECT_ROW] }); // SELECT project
     pool.query.mockResolvedValueOnce({ rows: [] }); // campaigns
     pool.query.mockResolvedValueOnce({ rows: [{ avg_rating: null, count: 0 }] }); // ratings
+    pool.query.mockResolvedValueOnce({ rows: [] }); // recent reviews
     pool.query.mockResolvedValueOnce({ rows: [{ count: 0 }] }); // subscribers
     pool.query.mockResolvedValueOnce({ rows: [] }); // milestones
     pool.query.mockResolvedValueOnce({
@@ -297,12 +298,14 @@ describe("GET /api/projects/:id", () => {
     expect(res.body.data.name).toBe("Test Project");
     expect(res.body.data.followCount).toBe(7);
     expect(res.body.data.isFollowing).toBe(false);
+    expect(res.body.data.recentReviews).toEqual([]);
   });
 
   test("returns followCount zero when project has no followers", async () => {
     pool.query.mockResolvedValueOnce({ rows: [MOCK_PROJECT_ROW] });
     pool.query.mockResolvedValueOnce({ rows: [] });
     pool.query.mockResolvedValueOnce({ rows: [{ avg_rating: null, count: 0 }] });
+    pool.query.mockResolvedValueOnce({ rows: [] }); // recent reviews
     pool.query.mockResolvedValueOnce({ rows: [{ count: 0 }] });
     pool.query.mockResolvedValueOnce({ rows: [] });
     pool.query.mockResolvedValueOnce({
