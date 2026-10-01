@@ -12,8 +12,9 @@ const { logAdminAction } = require("../services/audit");
 const { mapProjectRow, mapProjectMilestoneRow, updateWebhook, computeBadges } = require("../services/store");
 const {
   getOnChainProject,
-  getProjectDonationEvents,
+getProjectDonationEvents,
   getRegisteredProjectIdFromTransaction,
+  buildSetFundingDeadlineTx,
   CONTRACT_ID,
   server,
   NETWORK_PASSPHRASE,
@@ -33,6 +34,8 @@ const PROJECT_DETAIL_CACHE_PREFIX = "projects:detail:";
 const PROJECT_MILESTONES_CACHE_TTL = 300; // seconds (5 minutes)
 const PROJECT_MILESTONES_CACHE_PREFIX = "projects:milestones:";
 
+const FUNDING_DEADLINE_CACHE_PREFIX = "projects:funding-deadline:";
+
 function getProjectMilestonesCacheKey(projectId) {
   return PROJECT_MILESTONES_CACHE_PREFIX + projectId;
 }
@@ -41,6 +44,9 @@ function getProjectDetailCacheKey(projectId) {
   return PROJECT_DETAIL_CACHE_PREFIX + projectId;
 }
 
+function getFundingDeadlineCacheKey(projectId) {
+  return FUNDING_DEADLINE_CACHE_PREFIX + projectId;
+}
 const VALID_STATUSES = ["active", "completed", "paused"];
 const VALID_CATEGORIES = [
   "Reforestation",
@@ -102,6 +108,52 @@ function mapCampaignRow(row) {
     active: !completed,
     createdAt: new Date(row.created_at).toISOString(),
   };
+}
+
+/**
+ * Map a project_funding_deadlines row into the API shape.
+ *
+ * @param {object} row - Row from project_funding_deadlines.
+ * @returns {object|null} Normalized funding deadline payload, or null.
+ */
+function mapFundingDeadlineRow(row) {
+  if (!row) return null;
+  const goalXLM = Number.parseFloat(row.goal_amount?.toString() || "0");
+  const raisedXLM = Number.parseFloat(row.raised_xlm?.toString() || "0");
+  const deadlineMs = new Date(row.deadline_at).getTime();
+  const now = Date.now();
+  const past = now >= deadlineMs;
+  const met = goalXLM > 0 && raisedXLM >= goalXLM;
+  return {
+    projectId: row.project_id,
+    deadlineLedger: row.deadline_ledger != null ? Number(row.deadline_ledger) : null,
+    deadlineAt: new Date(row.deadline_at).toISOString(),
+    goalAmount: goalXLM.toFixed(7),
+    raisedXLM: raisedXLM.toFixed(7),
+    goalMet: met,
+    expired: past,
+    refundTriggered: Boolean(row.refund_triggered),
+    refundTriggeredAt: row.refund_triggered_at
+      ? new Date(row.refund_triggered_at).toISOString()
+      : null,
+  };
+}
+
+/**
+ * Fetch the funding deadline configuration for a project (may be null).
+ *
+ * @param {string} projectId - Project UUID.
+ * @returns {Promise<object|null>} Funding deadline payload or null.
+ */
+async function fetchFundingDeadline(projectId) {
+  const result = await pool.query(
+    `SELECT fd.*, COALESCE(p.raised_xlm, 0) AS raised_xlm
+       FROM project_funding_deadlines fd
+       LEFT JOIN projects p ON p.id = fd.project_id
+      WHERE fd.project_id = $1`,
+    [projectId],
+  );
+  return mapFundingDeadlineRow(result.rows[0]);
 }
 
 async function fetchCampaignsForProject(projectId) {
@@ -273,7 +325,7 @@ router.get("/", async (req, res, next) => {
         category,
         status,
         verified,
-        search: search || q,
+search: search || q,
         sort: sortField,
         limit: pageSize,
         cursor: cursor || null,
@@ -297,10 +349,10 @@ router.get("/", async (req, res, next) => {
     if (verified === "true") {
       where.push("verified = true");
     }
-    const searchTerm = q || search;
+const searchTerm = q || search;
     if (searchTerm && typeof searchTerm === "string") {
       values.push(searchTerm.trim());
-      where.push(`unaccent(name) ILIKE unaccent('%' || $${values.length} || '%')`);
+      where.push(`search_vector @@ websearch_to_tsquery('english', $${values.length})`);
     }
 
     if (cursor) {
@@ -318,7 +370,9 @@ router.get("/", async (req, res, next) => {
       values.push(sortValue, id);
       const sortValIdx = values.length - 1;
       const idIdx = values.length;
-      where.push(`(${sortField}, id) < ($${sortValIdx}, $${idIdx})`);
+where.push(
+        `(${sortField} < $${sortValIdx} OR (${sortField} = $${sortValIdx} AND id < $${idIdx}))`,
+      );
     }
 
     values.push(pageSize + 1);
@@ -1095,6 +1149,9 @@ router.get("/:id", async (req, res, next) => {
       [req.params.id],
     );
 
+// Funding deadline / auto-refund metadata (may be null if not configured).
+    const fundingDeadline = await fetchFundingDeadline(req.params.id);
+
     // Follower count + optional isFollowing from wallet-only project_follows rows.
     // When ?walletAddress=G... is passed, include whether that wallet follows.
     // Device-token (push) rows are excluded so web Follow state stays consistent
@@ -1154,6 +1211,7 @@ router.get("/:id", async (req, res, next) => {
           : "0.0000000",
         campaigns,
         activeCampaign: campaigns.find((campaign) => campaign.active) || null,
+        fundingDeadline,
         averageRating: parseFloat(ratingResult.rows[0]?.avg_rating) || 0,
         ratingCount: parseInt(ratingResult.rows[0]?.count) || 0,
         recentReviews,
@@ -2047,6 +2105,8 @@ module.exports = router;
 // Export internal functions for testing
 if (process.env.NODE_ENV === "test") {
   module.exports.mapCampaignRow = mapCampaignRow;
-  module.exports.getUsdcToXlmRate = getUsdcToXlmRate;
+module.exports.getUsdcToXlmRate = getUsdcToXlmRate;
   module.exports.fetchCampaignsForProject = fetchCampaignsForProject;
+  module.exports.mapFundingDeadlineRow = mapFundingDeadlineRow;
+  module.exports.fetchFundingDeadline = fetchFundingDeadline;
 }

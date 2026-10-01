@@ -151,6 +151,10 @@ async function recordDonation(req, res, next) {
     if (!projectResult.rows[0]) { const e = new Error("Project not found"); e.status = 404; throw e; }
     const projectCo2PerXlm = projectResult.rows[0].co2_per_xlm;
 
+    // Determine numeric amount depending on currency
+    const parsedAmount = parseFloat(currency === "XLM" ? amountXLM ?? amount : amount);
+    if (isNaN(parsedAmount) || parsedAmount <= 0) { const e = new Error("Invalid amount"); e.status = 400; throw e; }
+
     // Deduplicate by tx hash
     const existingResult = await client.query(
       "SELECT * FROM donations WHERE transaction_hash = $1",

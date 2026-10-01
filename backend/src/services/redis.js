@@ -128,6 +128,12 @@ async function deletePattern(pattern) {
   } catch {
     // Cache invalidation failure is non-fatal
   }
+  try {
+    const { clearMemoryStore } = require("../middleware/rateLimiter");
+    clearMemoryStore(pattern);
+  } catch {
+    // Non-fatal
+  }
 }
 
 async function ping() {
