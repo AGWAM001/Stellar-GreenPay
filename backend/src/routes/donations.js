@@ -57,16 +57,19 @@ async function recordDonation(req, res, next) {
     validateKey(donorAddress);
     validateTxHash(transactionHash);
 
-    client = await pool.connect();
-
-    const projectResult = await client.query("SELECT id, co2_per_xlm, name FROM projects WHERE id = $1", [projectId]);
-    if (!projectResult.rows[0]) { const e = new Error("Project not found"); e.status = 404; throw e; }
-    const projectCo2PerXlm = projectResult.rows[0].co2_per_xlm;
-    const project = projectResult.rows[0] || {};
-
     // Determine numeric amount depending on currency
     const parsedAmount = parseFloat(currency === "XLM" ? amountXLM ?? amount : amount);
-    if (isNaN(parsedAmount) || parsedAmount <= 0) { const e = new Error("Invalid amount"); e.status = 400; throw e; }
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      const e = new Error("Donation amount must be a positive number");
+      e.status = 400;
+      throw e;
+    }
+
+    client = await pool.connect();
+
+    const projectResult = await client.query("SELECT id, co2_per_xlm, name, wallet_address FROM projects WHERE id = $1", [projectId]);
+    if (!projectResult.rows[0]) { const e = new Error("Project not found"); e.status = 404; throw e; }
+    const projectCo2PerXlm = projectResult.rows[0].co2_per_xlm;
 
     // Deduplicate by tx hash
     const existingResult = await client.query(
@@ -123,17 +126,6 @@ async function recordDonation(req, res, next) {
       ],
     );
 
-    const recordedDonation = donationResult.rows[0] || {
-      id: uuid(),
-      project_id: projectId,
-      donor_address: donorAddress,
-      amount_xlm: currency === "XLM" ? parsedAmount : null,
-      amount: parsedAmount,
-      currency,
-      message: message?.trim().slice(0, 100) || null,
-      transaction_hash: transactionHash,
-      created_at: new Date().toISOString(),
-    };
 
     // Check for active matching offers
     if (currency === "XLM") {
@@ -194,6 +186,32 @@ async function recordDonation(req, res, next) {
 
     await client.query("COMMIT");
     inTransaction = false;
+
+    // Award referral bonus if this is the referred user's first donation
+    if (currency === "XLM") {
+      try {
+        const referralCheck = await pool.query(
+          `SELECT COUNT(*) as count FROM donations WHERE donor_address = $1`,
+          [donorAddress]
+        );
+        const donationCount = parseInt(referralCheck.rows[0]?.count || "0");
+        
+        // If this is the first donation, award referral bonus
+        if (donationCount === 1) {
+          await fetch(`${process.env.API_URL || "http://localhost:4000"}/api/v1/referrals/award-bonus`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              referredAddress: donorAddress,
+              donationId: recordedDonation.id,
+              amountXLM: parsedAmount.toString()
+            })
+          }).catch(err => logger.error("Failed to award referral bonus:", err));
+        }
+      } catch (err) {
+        logger.error("Referral bonus check failed:", err);
+      }
+    }
 
     await redis.deletePattern("projects:list:*");
     // The leaderboard aggregates the row just inserted, so every cached page is
@@ -270,6 +288,16 @@ async function recordDonation(req, res, next) {
       donorBadge,
     });
 
+    // Enqueue push notification to project admin (non-blocking)
+    enqueueDonationPushNotification({
+      projectId,
+      projectName,
+      amountXLM: String(donationRow.amount_xlm ?? parsedAmount),
+      donorBadge,
+    }).catch((err) => {
+      logger.error({ event: "donation_push_enqueue_error", projectId, err: err.message }, "Failed to enqueue donation push notification");
+    });
+
     await checkAndDeliverMilestones(projectId).catch((err) => {
       logger.error({ event: "milestone_webhook_error", projectId, err: err.message }, "Failed to deliver milestone webhooks");
     });
@@ -298,11 +326,43 @@ router.post("/", donationLimiter, recordDonation);
 
 // GET /api/donations/stream
 router.get("/stream", (req, res) => {
+  const projectId = req.query.projectId || req.query.project_id || "default";
+  const lastEventId = req.headers["last-event-id"];
+
+  // When reconnecting, a Last-Event-ID that belongs to a different project
+  // than this stream is scoped to is rejected before committing to SSE.
+  if (lastEventId != null && lastEventId !== "") {
+    const lastIdNum = Number(lastEventId);
+    const lastEvent = Number.isNaN(lastIdNum)
+      ? undefined
+      : donationEvents.findEvent(lastIdNum);
+    if (lastEvent && lastEvent.projectId !== projectId) {
+      return res.status(400).json({
+        error: `Last-Event-ID ${lastEventId} does not belong to project ${projectId}`,
+      });
+    }
+  }
+
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
   res.write("retry: 1000\n\n");
+
+  // Replay events missed since the Last-Event-ID. An unknown id is treated as
+  // a cold start and the full project history is replayed (stream reset).
+  if (lastEventId != null && lastEventId !== "") {
+    const lastIdNum = Number(lastEventId);
+    const lastEvent = Number.isNaN(lastIdNum)
+      ? undefined
+      : donationEvents.findEvent(lastIdNum);
+    const replay = lastEvent
+      ? donationEvents.getEventsAfter(projectId, lastIdNum)
+      : donationEvents.getEventsForProject(projectId);
+    for (const event of replay) {
+      res.write(`id: ${event.id}\ndata: ${JSON.stringify(event.data)}\n\n`);
+    }
+  }
 
   const onNewDonation = (donation) => {
     res.write(`data: ${JSON.stringify(donation)}\n\n`);

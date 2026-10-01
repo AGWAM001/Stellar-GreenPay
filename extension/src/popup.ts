@@ -7,41 +7,34 @@ import {
   TransactionBuilder,
 } from "@stellar/stellar-sdk";
 import { loadSettings, type ExtensionSettings } from "./settings";
+import {
+  addPendingDonation,
+  checkPendingDonations,
+  getPendingDonations,
+  horizonUrlForNetwork,
+  PENDING_STORAGE_KEY,
+  stellarExpertTxUrl,
+  syncBadge,
+  type PendingDonation,
+} from "./pendingTransactions";
 
 // Module-level vars
 let API_BASE = "https://api.stellar-greenpay.app";
 let NETWORK_PASSPHRASE: string = Networks.TESTNET;
+let currentNetwork: "testnet" | "mainnet" = "testnet";
 let horizonUrl = "https://horizon-testnet.stellar.org";
 let server = new Horizon.Server(horizonUrl);
 
 function applySettings(settings: ExtensionSettings) {
   API_BASE = settings.backendUrl;
+  currentNetwork = settings.network === "mainnet" ? "mainnet" : "testnet";
   if (settings.network === "mainnet") {
     NETWORK_PASSPHRASE = Networks.PUBLIC;
-    horizonUrl = "https://horizon.stellar.org";
   } else {
     NETWORK_PASSPHRASE = Networks.TESTNET;
-    horizonUrl = "https://horizon-testnet.stellar.org";
   }
+  horizonUrl = horizonUrlForNetwork(currentNetwork);
   server = new Horizon.Server(horizonUrl);
-}
-
-// ==================== BADGE HELPERS ====================
-function abbreviateNumber(num: number): string {
-  if (num < 1000) return Math.floor(num).toString();
-  if (num < 1000000) return Math.floor(num / 1000) + "K";
-  return (num / 1000000).toFixed(1) + "M";
-}
-
-async function updateDonationBadge(totalXLM: number) {
-  const text = abbreviateNumber(totalXLM);
-  try {
-    await chrome.action.setBadgeText({ text });
-    await chrome.action.setBadgeBackgroundColor({ color: "#10b981" });
-    console.log(`[GreenPay Badge] Updated: ${text} (${totalXLM} XLM)`);
-  } catch (e) {
-    console.error("Badge update failed:", e);
-  }
 }
 
 async function signWithFreighter(xdr: string): Promise<string> {
@@ -290,12 +283,90 @@ function renderDropdown(projects: ProjectResult[], dropdown: HTMLUListElement) {
   });
 }
 
+// ==================== PENDING TRANSACTIONS ====================
+
+async function renderPendingFromStorage() {
+  renderPendingDonations(await getPendingDonations());
+}
+
+async function refreshPendingSection() {
+  renderPendingDonations(await checkPendingDonations());
+}
+
+function truncateAddress(address: string): string {
+  return address.length > 12
+    ? `${address.slice(0, 6)}…${address.slice(-4)}`
+    : address;
+}
+
+function formatAge(createdAt: number): string {
+  const seconds = Math.max(0, Math.round((Date.now() - createdAt) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  return `${Math.floor(seconds / 60)}m ago`;
+}
+
+function renderPendingDonations(donations: PendingDonation[]) {
+  const section = document.getElementById("pending-section");
+  const list = document.getElementById(
+    "pending-list",
+  ) as HTMLUListElement | null;
+  const count = document.getElementById("pending-count");
+  if (!section || !list || !count) return;
+
+  list.innerHTML = "";
+  count.textContent = String(donations.length);
+  section.classList.toggle("hidden", donations.length === 0);
+
+  donations.forEach((donation) => {
+    const info = document.createElement("div");
+    info.className = "pending-info";
+
+    const amount = document.createElement("div");
+    amount.className = "pending-amount";
+    amount.textContent = `${donation.amount} XLM pending`;
+
+    const recipient = document.createElement("div");
+    recipient.className = "pending-dest";
+    recipient.textContent = `to ${truncateAddress(donation.destination)} · ${formatAge(donation.createdAt)}`;
+
+    info.append(amount, recipient);
+
+    const link = document.createElement("a");
+    link.className = "pending-link";
+    link.href = stellarExpertTxUrl(donation.hash, currentNetwork);
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "Stellar Expert";
+
+    const item = document.createElement("li");
+    item.className = "glass-panel pending-item";
+    item.append(info, link);
+    list.appendChild(item);
+  });
+}
+
+function initPendingSection() {
+  void refreshPendingSection();
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes[PENDING_STORAGE_KEY])
+      void renderPendingFromStorage();
+  });
+
+  window.setInterval(() => void refreshPendingSection(), 15000);
+}
+
 async function saveTotalDonated(total: number) {
   return new Promise<void>((resolve) => {
-    chrome.storage.local.set({ totalDonatedXLM: Math.max(0, total) }, () => {
-      updateDonationBadge(total);
-      resolve();
-    });
+    // syncBadge gives the pending red dot precedence while a donation is in
+    // flight, and restores the donation total once everything has settled.
+    chrome.storage.local.set(
+      { totalDonatedXLM: Math.max(0, total) },
+      async () => {
+        await syncBadge();
+        resolve();
+      },
+    );
   });
 }
 
@@ -355,6 +426,79 @@ async function fetchProfile(publicKey: string): Promise<any> {
 // ==================== WALLET CONNECT ====================
 let currentPublicKey: string | null = null;
 
+/** Key used to cache the connected address in `chrome.storage.session`. */
+const SESSION_ADDRESS_KEY = 'connectedWalletAddress';
+
+/**
+ * Session storage is in-memory and dropped when the browser closes, so the
+ * cached address never outlives the browsing session. Browsers without
+ * `storage.session` (older Firefox) fall back to no caching.
+ */
+const sessionArea = (): chrome.storage.StorageArea | null =>
+  chrome.storage?.session ?? null;
+
+function getSessionAddress(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const area = sessionArea();
+    if (!area) {
+      resolve(null);
+      return;
+    }
+    try {
+      area.get([SESSION_ADDRESS_KEY], (result) => {
+        const value = result?.[SESSION_ADDRESS_KEY];
+        resolve(typeof value === 'string' && value ? value : null);
+      });
+    } catch (e) {
+      console.warn('Session storage read failed:', e);
+      resolve(null);
+    }
+  });
+}
+
+function setSessionAddress(address: string): void {
+  const area = sessionArea();
+  if (!area) return;
+  try {
+    area.set({ [SESSION_ADDRESS_KEY]: address }, () => {
+      void chrome.runtime.lastError;
+    });
+  } catch (e) {
+    console.warn('Session storage write failed:', e);
+  }
+}
+
+function clearSessionAddress(): void {
+  const area = sessionArea();
+  if (!area) return;
+  try {
+    area.remove([SESSION_ADDRESS_KEY], () => {
+      void chrome.runtime.lastError;
+    });
+  } catch (e) {
+    console.warn('Session storage clear failed:', e);
+  }
+}
+
+function abbreviateAddress(address: string): string {
+  return `${address.slice(0, 8)}...${address.slice(-4)}`;
+}
+
+/** Paint the wallet header for a known address (cached or freshly resolved). */
+function renderConnectedAddress(publicKey: string) {
+  const addressEl = document.getElementById('wallet-address') as HTMLSpanElement | null;
+  if (addressEl) addressEl.textContent = abbreviateAddress(publicKey);
+
+  const walletInfo = document.getElementById('wallet-info') as HTMLElement | null;
+  if (walletInfo) walletInfo.classList.remove('hidden');
+
+  const connectBtn = document.getElementById('connect-btn') as HTMLButtonElement | null;
+  if (connectBtn) {
+    connectBtn.textContent = '✓ Connected';
+    connectBtn.disabled = true;
+  }
+}
+
 async function connectWallet() {
   try {
     const freighter = (window as any).freighter;
@@ -369,6 +513,8 @@ async function connectWallet() {
 
     const publicKey = await freighter.getPublicKey();
     currentPublicKey = publicKey;
+    setSessionAddress(publicKey);
+    renderConnectedAddress(publicKey);
 
     // UI Updates
     const addressEl = document.getElementById(
@@ -408,6 +554,43 @@ async function connectWallet() {
   }
 }
 
+/**
+ * Restore the wallet header on popup open (#1132).
+ *
+ * 1. Read the address cached in `chrome.storage.session` and paint it
+ *    synchronously so the popup never shows an empty wallet.
+ * 2. Re-validate against Freighter in the background; if the user switched
+ *    accounts, the display and the cache are updated to the new address.
+ */
+async function restoreWalletSession() {
+  const cached = await getSessionAddress();
+  if (cached) {
+    currentPublicKey = cached;
+    renderConnectedAddress(cached);
+  }
+
+  const freighter = (window as any).freighter;
+  if (!freighter) {
+    // No wallet available — drop any stale cached address.
+    if (cached) clearSessionAddress();
+    return;
+  }
+
+  try {
+    const publicKey: string = await freighter.getPublicKey();
+    if (!publicKey) return;
+    if (publicKey !== currentPublicKey) {
+      console.log('[GreenPay] Connected wallet changed — updating');
+      currentPublicKey = publicKey;
+      renderConnectedAddress(publicKey);
+      setSessionAddress(publicKey);
+    }
+  } catch (err) {
+    // Freighter locked / unreachable — keep showing the cached address.
+    console.warn('Wallet re-validation failed (showing cached address):', err);
+  }
+}
+
 // ==================== DONATION HELPERS (keep your existing ones) ====================
 // buildDonationTransaction, signWithFreighter, submitTransaction, recordDonation, etc.
 
@@ -428,6 +611,84 @@ function setStatus(message: string, isError = false) {
     statusEl.textContent = message;
     statusEl.style.color = isError ? "#ef4444" : "#10b981";
   }
+}
+
+const onboardingSteps = [
+  {
+    title: "What is GreenPay?",
+    description:
+      "GreenPay helps you discover climate projects and support them with Stellar payments.",
+  },
+  {
+    title: "Connect Freighter wallet",
+    description:
+      "Connect your Freighter wallet to GreenPay on the selected Stellar network. Review each request in Freighter before signing a donation.",
+  },
+  {
+    title: "Find your first project",
+    description:
+      "Choose an active climate project from the catalog or search for one to prepare your first donation.",
+  },
+];
+
+function renderOnboardingStep(overlay: HTMLElement, stepIndex: number) {
+  const step = onboardingSteps[stepIndex];
+  overlay.dataset.step = String(stepIndex + 1);
+  overlay.innerHTML = `
+    <section class="onboarding-card" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+      <p class="onboarding-progress">Step ${stepIndex + 1} of ${onboardingSteps.length}</p>
+      <h2 id="onboarding-title" tabindex="-1">${step.title}</h2>
+      <p class="onboarding-description">${step.description}</p>
+      <p class="onboarding-error" role="status" aria-live="polite"></p>
+      <div class="onboarding-actions">
+        ${stepIndex > 0 ? '<button class="btn onboarding-back" type="button">Back</button>' : ""}
+        ${stepIndex < onboardingSteps.length - 1
+          ? '<button class="btn onboarding-next" type="button">Next</button>'
+          : '<button class="btn onboarding-done" type="button">Got it</button>'}
+      </div>
+    </section>
+  `;
+
+  overlay.querySelector<HTMLButtonElement>(".onboarding-back")?.addEventListener(
+    "click",
+    () => renderOnboardingStep(overlay, stepIndex - 1),
+  );
+  overlay.querySelector<HTMLButtonElement>(".onboarding-next")?.addEventListener(
+    "click",
+    () => renderOnboardingStep(overlay, stepIndex + 1),
+  );
+  overlay.querySelector<HTMLButtonElement>(".onboarding-done")?.addEventListener(
+    "click",
+    (event) => {
+      const button = event.currentTarget as HTMLButtonElement;
+      button.disabled = true;
+      chrome.storage.local.set({ onboarded: true }, () => {
+        if (chrome.runtime.lastError) {
+          button.disabled = false;
+          const error = overlay.querySelector<HTMLElement>(".onboarding-error");
+          if (error) error.textContent = "Could not save your progress. Please try again.";
+          return;
+        }
+        overlay.remove();
+      });
+    },
+  );
+
+  overlay.querySelector<HTMLElement>("#onboarding-title")?.focus();
+}
+
+function showOnboardingIfNeeded() {
+  chrome.storage.local.get(["onboarded"], (result: Record<string, unknown>) => {
+    if (result.onboarded === true) return;
+
+    const main = document.querySelector("main");
+    if (!main) return;
+
+    const overlay = document.createElement("div");
+    overlay.className = "onboarding-overlay";
+    main.appendChild(overlay);
+    renderOnboardingStep(overlay, 0);
+  });
 }
 
 async function initProjectSearch() {
@@ -478,6 +739,7 @@ async function initProjectSearch() {
 document.addEventListener("DOMContentLoaded", async () => {
   const settings = await loadSettings();
   applySettings(settings);
+  showOnboardingIfNeeded();
 
   // Check if Freighter is installed
   const freighter = (window as any).freighter;
@@ -523,7 +785,18 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   initProjectSearch();
   initProjectListKeyNav();
+  initPendingSection();
 
+  // Paint the cached wallet address first, then re-validate in the background.
+  // Not awaited: the popup must finish wiring up while Freighter is queried.
+  void restoreWalletSession();
+
+  const connectBtn = document.getElementById('connect-btn');
+  if (connectBtn) {
+    connectBtn.addEventListener('click', () => {
+      void connectWallet();
+    });
+  }
   // Initialize with empty project list to show empty state
   renderProjectList([]);
 
@@ -622,9 +895,14 @@ document.addEventListener("DOMContentLoaded", async () => {
       setStatus("Submitting transaction…");
       const hash = await submitTransaction(signedXdr);
 
+      // Horizon accepts the transaction before the ledger has applied it, so it
+      // is tracked as pending until the background poller sees it land.
+      await addPendingDonation({ hash, amount, destination });
       await updateTotalAfterDonation(parseFloat(amount));
 
-      setStatus(`✅ Transaction submitted! Hash: ${hash.slice(0, 16)}…`);
+      setStatus(
+        `⏳ Transaction submitted! Awaiting confirmation. Hash: ${hash.slice(0, 16)}…`,
+      );
     } catch (err: any) {
       console.error("Donation error:", err);
       setStatus(
