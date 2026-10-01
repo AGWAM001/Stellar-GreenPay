@@ -1,13 +1,15 @@
 /**
  * pages/dashboard.tsx — Donor impact dashboard
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
+import html2canvas from "html2canvas";
 import Link from "next/link";
 import WalletConnect from "@/components/WalletConnect";
 import EditProfileForm from "@/components/EditProfileForm";
 import ProjectCard from "@/components/ProjectCard";
 import ImpactCertificate from "@/components/ImpactCertificate";
 import ProjectRating from "@/components/ProjectRating";
+import ReferralSection from "@/components/ReferralSection";
 import { fetchProfile, fetchDonorHistory, fetchProjects } from "@/lib/api";
 import { getDueMonthlySubscriptions } from "@/lib/monthlyGiving";
 import { getXLMBalance, getFriendBotFunding, NETWORK } from "@/lib/stellar";
@@ -17,6 +19,16 @@ import type { DonorProfile, Donation, ClimateProject, MonthlySubscription } from
 import { useWishlist } from "@/hooks/useWishlist";
 
 interface DashboardProps { publicKey: string | null; onConnect: (pk: string) => void; }
+
+/** Turn a canvas data URL into a PNG file download (issue #1200). */
+function triggerCertificateDownload(dataUrl: string) {
+  const a = document.createElement("a");
+  a.href = dataUrl;
+  a.download = "impact-certificate.png";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
 
 export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
   const [profile,   setProfile]   = useState<DonorProfile | null>(null);
@@ -29,7 +41,6 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
   const [isUnfunded, setIsUnfunded] = useState(false);
   const [friendbotState, setFriendbotState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [friendbotError, setFrienbotError] = useState<string | null>(null);
-  const [dueSubscriptions, setDueSubscriptions] = useState<MonthlySubscription[]>([]);
   const { wishlist } = useWishlist();
   const [showCertificate, setShowCertificate] = useState(false);
   const [pendingRating, setPendingRating] = useState<{ id: string, name: string } | null>(null);
@@ -65,10 +76,13 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
       .finally(() => setLoading(false));
   }, [publicKey, wishlist]);
 
-  useEffect(() => {
-    if (!publicKey) return;
-    setDueSubscriptions(getDueMonthlySubscriptions());
-  }, [publicKey]);
+  // publicKey is always null during SSR/initial hydration (wallet connection
+  // is a client-only interaction), so this is safe to derive directly during
+  // render instead of via an effect + state.
+  const dueSubscriptions = useMemo<MonthlySubscription[]>(
+    () => (publicKey ? getDueMonthlySubscriptions() : []),
+    [publicKey]
+  );
 
   const streak = calculateStreak(donations);
   
@@ -96,6 +110,14 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
       }
     }
   }, [streak.longest]);
+
+  // ── Certificate image download (issue #1200) ───────────────────────────────
+  // The first click rasterizes the certificate DOM once; later clicks reuse
+  // the cached PNG until the donor's badge tier changes (the cache key), so
+  // repeated downloads never re-render the subtree or compete on the main
+  // thread.
+  const [certificateRendering, setCertificateRendering] = useState(false);
+  const certificateCanvasUrlRef = useRef<{ key: string; dataUrl: string } | null>(null);
 
   if (!publicKey) return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-16">
@@ -165,6 +187,44 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
       `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(url)}`,
       "_blank",
     );
+  };
+
+  // Key includes the address (certificates are per donor) and the badge tier:
+  // a tier change produces a new key, invalidating the cached snapshot.
+  const certificateCacheKey = `${publicKey}|${topBadgeTier ?? "none"}`;
+
+  const handleDownloadCertificate = async () => {
+    // Criterion 1: only one render can be in flight — later clicks are
+    // ignored while the button is disabled anyway.
+    if (certificateRendering) return;
+    const el = document.getElementById("impact-certificate");
+    if (!el) return;
+
+    // Criterion 2 + 3: serve the cached data URL until the tier changes.
+    const cached = certificateCanvasUrlRef.current;
+    if (cached && cached.key === certificateCacheKey) {
+      triggerCertificateDownload(cached.dataUrl);
+      return;
+    }
+
+    setCertificateRendering(true);
+    try {
+      const canvas = await html2canvas(el, {
+        backgroundColor: "#ffffff",
+        scale: 2,
+        useCORS: true,
+      });
+      const dataUrl = canvas.toDataURL("image/png");
+      certificateCanvasUrlRef.current = { key: certificateCacheKey, dataUrl };
+      triggerCertificateDownload(dataUrl);
+    } catch (err) {
+      // Graceful degradation: the pre-existing print-window flow still gives
+      // the user a downloadable certificate if rasterization fails.
+      console.error("Failed to rasterize the impact certificate", err);
+      handlePrintCertificate();
+    } finally {
+      setCertificateRendering(false);
+    }
   };
 
   return (
@@ -281,6 +341,9 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
 
       {activeTab === 'impact' ? (
         <div className="space-y-8 animate-slide-up">
+          {/* Referral Section */}
+          <ReferralSection publicKey={publicKey} />
+
           {/* Certificate */}
           <div className="card">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -298,10 +361,11 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
                   {showCertificate ? "Hide" : "Preview"}
                 </button>
                 <button
-                  onClick={handlePrintCertificate}
-                  className="px-5 py-2.5 rounded-xl text-sm font-semibold border border-forest-200 bg-forest-50 hover:bg-forest-100 transition-all"
+                  onClick={handleDownloadCertificate}
+                  disabled={certificateRendering || !showCertificate}
+                  className="px-5 py-2.5 rounded-xl text-sm font-semibold border border-forest-200 bg-forest-50 hover:bg-forest-100 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Download Certificate
+                  {certificateRendering ? "Rendering…" : "Download Certificate"}
                 </button>
                 <button
                   onClick={handleShareCertificate}

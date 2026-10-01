@@ -3,18 +3,125 @@
  */
 "use strict";
 const express = require("express");
-const router  = express.Router();
+const router = express.Router();
 const pool = require("../db/pool");
+const redis = require("../services/redis");
+const { leaderboardQueryDuration } = require("../services/metrics");
+const { createRateLimiter } = require("../middleware/rateLimiter");
 
-router.get("/", async (req, res, next) => {
+// 30 requests per minute per IP — prevents enumeration / data scraping (issue #695)
+const leaderboardLimiter = createRateLimiter(30, 1, "leaderboard");
+
+// Cursor-based pagination constants (matching /api/projects conventions).
+const LEADERBOARD_DEFAULT_LIMIT = 50;
+const LEADERBOARD_MAX_LIMIT = 200;
+
+// The ranking query aggregates every donation per profile, so it is far too
+// expensive to run per request (issue #1093). 60 seconds is short enough that a
+// freshly recorded donation surfaces almost immediately and long enough to
+// absorb a burst of reads.
+const LEADERBOARD_CACHE_TTL = 60; // seconds
+const LEADERBOARD_CACHE_PREFIX = "leaderboard:";
+
+/**
+ * Cache key for one leaderboard page.
+ *
+ * Every parameter that changes the result set is part of the key — including
+ * the pagination ones, so a cached page can never be served for a different
+ * page or ordering.
+ *
+ * @param {{ pageSize: number, cursor?: string, period: string, sortBy: string, onlyVerified: boolean }} params
+ * @returns {string}
+ */
+function getLeaderboardCacheKey({ pageSize, cursor, period, sortBy, onlyVerified }) {
+  return [
+    LEADERBOARD_CACHE_PREFIX,
+    sortBy,
+    period,
+    onlyVerified ? "verified" : "all",
+    pageSize,
+    cursor || "first",
+  ].join(":");
+}
+
+router.get("/", leaderboardLimiter, async (req, res, next) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+    const pageSize = Math.min(
+      Number.parseInt(req.query.limit, 10) || LEADERBOARD_DEFAULT_LIMIT,
+      LEADERBOARD_MAX_LIMIT
+    );
+    const cursor = req.query.cursor;
     const period = req.query.period || "all";
     const sortBy = req.query.sortBy === "impactScore" ? "impact_score" : "total_donated_xlm";
-
     const onlyVerified = req.query.onlyVerified === "true";
 
-    let query = `
+    const conditions = [];
+    const params = [];
+
+    if (period === "week") {
+      conditions.push("d.created_at >= NOW() - INTERVAL '7 days'");
+    } else if (period === "month") {
+      conditions.push("d.created_at >= NOW() - INTERVAL '30 days'");
+    } else if (period === "year") {
+      conditions.push("d.created_at >= NOW() - INTERVAL '1 year'");
+    }
+
+    if (onlyVerified) {
+      // Distinct aliases avoid clashing with the outer `pr` JOIN used for impact/CO2.
+      const verifiedSubQuery = `
+        NOT EXISTS (
+          SELECT 1 FROM donations d2
+          JOIN projects pr_unverified ON d2.project_id = pr_unverified.id
+          WHERE d2.donor_address = p.public_key AND pr_unverified.verified = false
+        )
+        AND EXISTS (
+          SELECT 1 FROM donations d3
+          JOIN projects pr_verified ON d3.project_id = pr_verified.id
+          WHERE d3.donor_address = p.public_key AND pr_verified.verified = true
+        )
+      `;
+      conditions.push(`(${verifiedSubQuery})`);
+    }
+
+    // Cursor-based pagination on (sortBy, public_key), mirroring /api/projects.
+    if (cursor) {
+      let cursorData;
+      try {
+        cursorData = JSON.parse(Buffer.from(cursor, "base64").toString("utf8"));
+      } catch {
+        return res.status(400).json({ error: "Invalid cursor" });
+      }
+      // eslint-disable-next-line security/detect-object-injection
+      const sortValue = cursorData[sortBy];
+      const publicKey = cursorData.publicKey;
+      if (sortValue === undefined || !publicKey) {
+        return res.status(400).json({ error: "Invalid cursor" });
+      }
+      params.push(sortValue, publicKey);
+      const sortIdx = params.length - 1;
+      const keyIdx = params.length;
+      conditions.push(
+        `(${sortBy} < $${sortIdx} OR (${sortBy} = $${sortIdx} AND p.public_key < $${keyIdx}))`,
+      );
+    }
+
+    // Fetch pageSize + 1 so we can detect whether another page exists.
+    params.push(pageSize + 1);
+    const limitIdx = params.length;
+
+    const cacheKey = getLeaderboardCacheKey({ pageSize, cursor, period, sortBy, onlyVerified });
+    // A Redis outage makes get() resolve to null, so the endpoint degrades to
+    // hitting Postgres rather than failing.
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      return res.json(cached);
+    }
+
+    const whereClause = conditions.length > 0
+      ? `WHERE ${conditions.join("\n  AND ")}`
+      : "";
+
+    const query = `
       SELECT p.public_key, p.display_name, p.badges,
              COALESCE(SUM(d.amount_xlm), 0)::NUMERIC AS total_donated_xlm,
              COUNT(DISTINCT d.project_id)::INTEGER AS projects_supported,
@@ -43,39 +150,28 @@ router.get("/", async (req, res, next) => {
              )::NUMERIC AS impact_score
       FROM profiles p
       LEFT JOIN donations d ON p.public_key = d.donor_address
-    `;
-
-    if (period === "month") {
-      query += " AND d.created_at >= NOW() - INTERVAL '30 days' ";
-    } else if (period === "year") {
-      query += " AND d.created_at >= NOW() - INTERVAL '1 year' ";
-    }
-
-    if (onlyVerified) {
-      query += `
-        WHERE NOT EXISTS (
-          SELECT 1 FROM donations d2
-          JOIN projects pr ON d2.project_id = pr.id
-          WHERE d2.donor_address = p.public_key AND pr.verified = false
-        )
-        AND EXISTS (
-          SELECT 1 FROM donations d3
-          JOIN projects pr2 ON d3.project_id = pr2.id
-          WHERE d3.donor_address = p.public_key AND pr2.verified = true
-        )
-      `;
-    }
-
-    query += `
       LEFT JOIN projects pr ON pr.id = d.project_id
+      ${whereClause}
       GROUP BY p.public_key, p.display_name, p.badges
-      ORDER BY ${sortBy} DESC
-      LIMIT $1
+      ORDER BY ${sortBy} DESC, p.public_key DESC
+      LIMIT $${limitIdx}
     `;
 
     // eslint-disable-next-line sql-injection/no-sql-injection
-    const result = await pool.query(query, [limit]);
-    const entries = result.rows.map((p, i) => ({
+    const observeQueryDuration = leaderboardQueryDuration.startTimer({ period, sort_by: sortBy });
+    let result;
+    try {
+      result = await pool.query(query, params);
+    } finally {
+      // Recorded even when the query throws, otherwise the failures that matter
+      // most would be missing from the histogram.
+      observeQueryDuration();
+    }
+    const rows = result.rows;
+    const hasMore = rows.length > pageSize;
+    const pageRows = rows.slice(0, pageSize);
+
+    const entries = pageRows.map((p, i) => ({
       rank: i + 1,
       publicKey: p.public_key,
       displayName: p.display_name || null,
@@ -85,7 +181,30 @@ router.get("/", async (req, res, next) => {
       impactScore: p.impact_score?.toString() || "0",
       totalCO2OffsetKg: p.total_co2_offset_kg?.toString() || "0",
     }));
-    res.json({ success: true, data: entries });
+
+    let nextCursor = null;
+    if (hasMore) {
+      const last = pageRows[pageRows.length - 1];
+      // eslint-disable-next-line security/detect-object-injection
+      nextCursor = Buffer.from(
+        // eslint-disable-next-line security/detect-object-injection
+        JSON.stringify({ [sortBy]: last[sortBy], publicKey: last.public_key }),
+      ).toString("base64");
+    }
+
+    const payload = {
+      success: true,
+      data: entries,
+      has_more: hasMore,
+      next_cursor: nextCursor,
+    };
+
+    // Cache the fully-shaped response: `rank` is positional and derived from
+    // `impact_score`/`total_donated_xlm` ordering, so caching the rows alone
+    // would mean recomputing — and re-reading — the same page twice.
+    await redis.set(cacheKey, payload, LEADERBOARD_CACHE_TTL);
+
+    res.json(payload);
   } catch (e) {
     next(e);
   }
@@ -97,7 +216,7 @@ router.get("/", async (req, res, next) => {
  * Query params:
  *   - months (int, max 24, default 12): how many past months to return
  */
-router.get("/history", async (req, res, next) => {
+router.get("/history", leaderboardLimiter, async (req, res, next) => {
   try {
     const months = Math.min(parseInt(req.query.months, 10) || 12, 24);
     const result = await pool.query(
@@ -112,7 +231,9 @@ router.get("/history", async (req, res, next) => {
     const grouped = {};
     for (const row of result.rows) {
       const key = row.month.toISOString().slice(0, 7); // "YYYY-MM"
+      // eslint-disable-next-line security/detect-object-injection
       if (!grouped[key]) grouped[key] = [];
+      // eslint-disable-next-line security/detect-object-injection
       grouped[key].push({
         rank: row.rank,
         donorAddress: row.donor_address,
@@ -173,8 +294,7 @@ router.post("/snapshot", async (req, res, next) => {
     try {
       await client.query("BEGIN");
       let inserted = 0;
-      for (let i = 0; i < topResult.rows.length; i++) {
-        const row = topResult.rows[i];
+      for (const [i, row] of topResult.rows.entries()) {
         const badge = row.badges?.[0]?.tier || null;
         await client.query(
           `INSERT INTO monthly_leaderboard

@@ -12,7 +12,7 @@ const { logAdminAction } = require("../services/audit");
 const { mapProjectRow, mapProjectMilestoneRow, updateWebhook, computeBadges } = require("../services/store");
 const {
   getOnChainProject,
-  getProjectDonationEvents,
+getProjectDonationEvents,
   getRegisteredProjectIdFromTransaction,
   buildSetFundingDeadlineTx,
   CONTRACT_ID,
@@ -47,7 +47,6 @@ function getProjectDetailCacheKey(projectId) {
 function getFundingDeadlineCacheKey(projectId) {
   return FUNDING_DEADLINE_CACHE_PREFIX + projectId;
 }
-
 const VALID_STATUSES = ["active", "completed", "paused"];
 const VALID_CATEGORIES = [
   "Reforestation",
@@ -312,6 +311,7 @@ router.get("/", async (req, res, next) => {
       status,
       verified,
       search,
+      q,
       limit = 20,
       cursor,
       sort = "created_at",
@@ -325,7 +325,7 @@ router.get("/", async (req, res, next) => {
         category,
         status,
         verified,
-        search,
+search: search || q,
         sort: sortField,
         limit: pageSize,
         cursor: cursor || null,
@@ -349,8 +349,9 @@ router.get("/", async (req, res, next) => {
     if (verified === "true") {
       where.push("verified = true");
     }
-    if (search && typeof search === "string") {
-      values.push(search.trim());
+const searchTerm = q || search;
+    if (searchTerm && typeof searchTerm === "string") {
+      values.push(searchTerm.trim());
       where.push(`search_vector @@ websearch_to_tsquery('english', $${values.length})`);
     }
 
@@ -369,7 +370,7 @@ router.get("/", async (req, res, next) => {
       values.push(sortValue, id);
       const sortValIdx = values.length - 1;
       const idIdx = values.length;
-      where.push(
+where.push(
         `(${sortField} < $${sortValIdx} OR (${sortField} = $${sortValIdx} AND id < $${idIdx}))`,
       );
     }
@@ -503,6 +504,37 @@ router.post("/", async (req, res, next) => {
     res
       .status(201)
       .json({ success: true, data: mapProjectRow(result.rows[0]) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/**
+ * GET /api/projects/:id/donors
+ * Returns each donor address once for a project.
+ */
+router.get("/:id/donors", async (req, res, next) => {
+  try {
+    const projectResult = await pool.query(
+      "SELECT id FROM projects WHERE id = $1",
+      [req.params.id],
+    );
+    if (!projectResult.rows[0]) {
+      return res.status(404).json({ success: false, error: "Project not found" });
+    }
+
+    const result = await pool.query(
+      `SELECT DISTINCT donor_address
+         FROM donations
+        WHERE project_id = $1
+        ORDER BY donor_address ASC`,
+      [req.params.id],
+    );
+
+    res.json({
+      success: true,
+      data: result.rows.map((row) => row.donor_address),
+    });
   } catch (e) {
     next(e);
   }
@@ -1101,7 +1133,7 @@ router.get("/:id", async (req, res, next) => {
       [req.params.id],
     );
 
-    // Funding deadline / auto-refund metadata (may be null if not configured).
+// Funding deadline / auto-refund metadata (may be null if not configured).
     const fundingDeadline = await fetchFundingDeadline(req.params.id);
 
     // Follower count + optional isFollowing from wallet-only project_follows rows.
@@ -2056,7 +2088,7 @@ module.exports = router;
 // Export internal functions for testing
 if (process.env.NODE_ENV === "test") {
   module.exports.mapCampaignRow = mapCampaignRow;
-  module.exports.getUsdcToXlmRate = getUsdcToXlmRate;
+module.exports.getUsdcToXlmRate = getUsdcToXlmRate;
   module.exports.fetchCampaignsForProject = fetchCampaignsForProject;
   module.exports.mapFundingDeadlineRow = mapFundingDeadlineRow;
   module.exports.fetchFundingDeadline = fetchFundingDeadline;

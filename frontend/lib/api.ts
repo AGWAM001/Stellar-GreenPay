@@ -15,6 +15,7 @@ import type {
   LeaderboardEntry,
   EscrowJob,
   ProjectCampaign,
+  VerificationRequest,
 } from "@/utils/types";
 
 const api = axios.create({
@@ -131,13 +132,48 @@ export async function fetchProjects(params?: {
  * Fetch a single project by its id.
  *
  * @param id - Project id.
+ * @param walletAddress - Optional connected wallet; when provided, the backend
+ *   returns `isFollowing` for Follow button state on initial load (issue #705).
  * @returns The project.
  * @throws If the request fails (including 404s for missing projects).
  */
-export async function fetchProject(id: string) {
+export async function fetchProject(id: string, walletAddress?: string) {
   const { data } = await api.get<{ success: boolean; data: ClimateProject }>(
     `/api/projects/${id}`,
-    { params },
+    walletAddress ? { params: { walletAddress } } : undefined,
+  );
+  return data.data;
+}
+
+export interface ProjectFollowState {
+  isFollowing: boolean;
+  followCount: number;
+}
+
+/**
+ * Follow a project for the given wallet. Idempotent on the server.
+ */
+export async function followProject(
+  projectId: string,
+  walletAddress: string,
+): Promise<ProjectFollowState> {
+  const { data } = await api.post<{ success: boolean; data: ProjectFollowState }>(
+    `/api/projects/${projectId}/follow`,
+    { walletAddress },
+  );
+  return data.data;
+}
+
+/**
+ * Unfollow a project for the given wallet. Idempotent on the server.
+ */
+export async function unfollowProject(
+  projectId: string,
+  walletAddress: string,
+): Promise<ProjectFollowState> {
+  const { data } = await api.delete<{ success: boolean; data: ProjectFollowState }>(
+    `/api/projects/${projectId}/follow`,
+    { data: { walletAddress } },
   );
   return data.data;
 }
@@ -260,6 +296,53 @@ export async function fetchProjectDonations(
 }
 
 /**
+ * One page of a donor's history, plus what is needed to fetch the next one.
+ */
+export interface DonorHistoryPage {
+  donations: Donation[];
+  hasMore: boolean;
+  /** Opaque keyset cursor from the API; `null` once the last page is reached. */
+  nextCursor: string | null;
+  /** Donations in total, so the UI can report progress through the history. */
+  total: number;
+}
+
+/**
+ * Fetch one page of a donor's donation history.
+ *
+ * High-volume donors have hundreds of rows, which is far too many to send at
+ * once, so the endpoint is keyset-paginated (issue #1080).
+ *
+ * @param publicKey - Donor Stellar public key.
+ * @param options - Page size and the cursor returned by the previous page.
+ * @returns The page, whether more remain, the next cursor and the total count.
+ * @throws If the request fails.
+ */
+export async function fetchDonorHistoryPage(
+  publicKey: string,
+  { limit = 20, cursor }: { limit?: number; cursor?: string } = {},
+): Promise<DonorHistoryPage> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor) params.set("cursor", cursor);
+
+  const { data } = await api.get<{
+    success: boolean;
+    data: Donation[];
+    has_more: boolean;
+    next_cursor: string | null;
+    total: number;
+  }>(`/api/donations/donor/${publicKey}`, { params });
+
+  return {
+    donations: data.data ?? [],
+    hasMore: Boolean(data.has_more),
+    nextCursor: data.next_cursor ?? null,
+    // Falls back to the page length so an older API still renders a sane count.
+    total: Number.isFinite(data.total) ? data.total : (data.data?.length ?? 0),
+  };
+}
+
+/**
  * Fetch all donations made by a donor.
  *
  * @param publicKey - Donor Stellar public key.
@@ -324,10 +407,14 @@ export async function upsertProfile(
  * Fetch top donors.
  *
  * @param limit - Maximum number of entries to return (default: 20).
+ * @param period - Time window for donation totals (default: "all").
  * @returns Leaderboard entries.
  * @throws If the request fails.
  */
-export async function fetchLeaderboard(limit = 20) {
+export async function fetchLeaderboard(
+  limit = 20,
+  period: "all" | "week" | "month" | "year" = "all",
+) {
   const { data } = await api.get<{
     success: boolean;
     data: LeaderboardEntry[];
@@ -444,6 +531,28 @@ export async function fetchSubscriberCount(projectId: string) {
   return data.count;
 }
 
+export interface ProjectNotificationSubscription {
+  id: string;
+  projectId: string;
+  projectName: string;
+  email: string;
+  subscribed: boolean;
+}
+
+export async function fetchNotificationSubscriptions(email: string) {
+  const { data } = await api.get<{ success: boolean; data: ProjectNotificationSubscription[] }>(
+    "/api/subscriptions", { params: { email } },
+  );
+  return data.data;
+}
+
+export async function updateNotificationSubscription(id: string, email: string, subscribed: boolean) {
+  const { data } = await api.patch<{ success: boolean; data: ProjectNotificationSubscription }>(
+    `/api/subscriptions/${id}`, { email, subscribed },
+  );
+  return data.data;
+}
+
 // ── Global Stats ─────────────────────────────────────────────────
 export interface GlobalStats {
   totalXLMRaised: string;
@@ -479,6 +588,52 @@ export async function fetchGlobalStats(): Promise<GlobalStats> {
   }
 
   return normalizeGlobalStats(data);
+}
+
+/** A single point in the donation growth series. */
+export interface DonationGrowthPoint {
+  week: string;
+  totalXLM: number;
+}
+
+/**
+ * Fetch the weekly donation growth series from the backend.
+ *
+ * @param projectId - Optional project UUID; when omitted the series is global.
+ * @returns Weekly totals ordered oldest → newest.
+ * @throws If the request fails.
+ */
+export async function fetchDonationGrowth(
+  projectId?: string,
+): Promise<DonationGrowthPoint[]> {
+  const { data } = await api.get<{ success: boolean; data: DonationGrowthPoint[] }>(
+    "/api/stats/growth",
+    { params: projectId ? { projectId } : undefined },
+  );
+  return data.data;
+}
+
+/**
+ * Download a server-rendered impact certificate as a PDF.
+ *
+ * Used as the reliable fallback for browsers whose client-side canvas
+ * rendering is inconsistent (notably Safari).
+ *
+ * @returns The PDF file as a Blob.
+ * @throws If the request fails.
+ */
+export async function downloadImpactCertificate(payload: {
+  donorAddress: string;
+  donorName?: string | null;
+  totalDonatedXLM: string;
+  totalCO2OffsetKg: number;
+  badgeTier: string | null;
+  projectsSupported: Array<{ id: string; name: string }>;
+}): Promise<Blob> {
+  const { data } = await api.post("/api/impact/certificate/pdf", payload, {
+    responseType: "blob",
+  });
+  return data as Blob;
 }
 
 // ── Admin: Project Approval ──────────────────────────────────────
@@ -580,6 +735,8 @@ export async function fetchFeaturedProject(): Promise<ClimateProject | null> {
 export interface CategoryStats {
   category: string;
   count: number;
+  total_xlm: string;
+  total_donations: number;
 }
 
 export async function fetchCategoryStats(): Promise<CategoryStats[]> {
@@ -605,8 +762,15 @@ export interface ImpactCategoryBreakdownItem {
   co2OffsetKg: number;
 }
 
+export interface ImpactCountryBreakdownItem {
+  country: string;
+  totalDonationsXLM: string;
+  donorCount: number;
+}
+
 export interface ImpactGlobalStats extends ImpactProjectStats {
   breakdownByCategory: ImpactCategoryBreakdownItem[];
+  countryBreakdown: ImpactCountryBreakdownItem[];
 }
 
 export interface ImpactDonorStats {
@@ -677,6 +841,33 @@ export async function submitProject(payload: SubmitProjectPayload): Promise<Subm
   return data.data;
 }
 
+// ── Webhooks ─────────────────────────────────────────────────────────────────
+
+export interface WebhookConfig {
+  webhookUrl: string | null;
+  webhookSecret: string | null;
+}
+
+export async function updateProjectWebhook(
+  projectId: string,
+  payload: { webhookUrl?: string | null; webhookSecret?: string | null },
+): Promise<WebhookConfig> {
+  const { data } = await api.patch<{ success: boolean; data: WebhookConfig }>(
+    `/api/projects/${projectId}/webhook`,
+    payload,
+  );
+  return data.data;
+}
+
+export async function testProjectWebhook(
+  projectId: string,
+): Promise<{ success: boolean; statusCode: number }> {
+  const { data } = await api.post<{ success: boolean; statusCode: number }>(
+    `/api/projects/${projectId}/webhook/test`,
+  );
+  return data;
+}
+
 // ── Verification Requests (/apply) ───────────────────────────────────────────
 export interface VerificationDocument {
   name: string;
@@ -704,6 +895,7 @@ export interface VerificationRequestPayload {
 
 export interface VerificationRequestResponse {
   id: string;
+  documentCount: number;
   organizationName: string;
   organizationWebsite: string | null;
   organizationCountry: string | null;
@@ -736,6 +928,21 @@ export async function submitVerificationRequest(
   return data.data;
 }
 
+export async function fetchVerificationRequests(
+  status?: string,
+  adminToken?: string,
+): Promise<VerificationRequestResponse[]> {
+  const params: Record<string, string> = {};
+  if (status) params.status = status;
+  const headers: Record<string, string> = {};
+  if (adminToken) headers.Authorization = `Bearer ${adminToken}`;
+  const { data } = await api.get<{ success: boolean; data: VerificationRequestResponse[] }>(
+    "/api/verification-requests",
+    { params, headers },
+  );
+  return data.data;
+}
+
 export async function fetchMyVerificationRequests(
   walletAddress: string,
 ): Promise<VerificationRequestResponse[]> {
@@ -755,6 +962,92 @@ export async function fetchVerificationRequest(
   const { data } = await api.get<{ success: boolean; data: VerificationRequestResponse }>(
     `/api/verification-requests/${id}`,
     { params },
+  );
+  return data.data;
+}
+
+/**
+ * Fetch a single verification request as an admin (sends Bearer token).
+ * Uses the Authorization header so no wallet query param is required.
+ *
+ * @param id - Verification request id.
+ * @param adminToken - Bearer JWT issued by /api/admin/login.
+ * @returns The verification request row.
+ * @throws If the request fails or the token is invalid / expired.
+ */
+export async function fetchVerificationRequestAdmin(
+  id: string,
+  adminToken: string,
+): Promise<VerificationRequestResponse> {
+  const { data } = await api.get<{ success: boolean; data: VerificationRequestResponse }>(
+    `/api/verification-requests/${id}`,
+    { headers: { Authorization: `Bearer ${adminToken}` } },
+  );
+  return data.data;
+}
+
+/**
+ * Fetch the supporting document metadata for a verification request on demand
+ * (admin). The admin detail page calls this lazily on scroll / expand so the
+ * initial request payload stays lightweight.
+ *
+ * @param id - Verification request id.
+ * @param adminToken - Bearer JWT issued by /api/admin/login.
+ * @returns The supporting document list for the request.
+ */
+export async function fetchVerificationRequestDocuments(
+  id: string,
+  adminToken: string,
+): Promise<VerificationDocument[]> {
+  const { data } = await api.get<{ success: boolean; data: { documents: VerificationDocument[] } }>(
+    `/api/verification-requests/${id}/documents`,
+    { headers: { Authorization: `Bearer ${adminToken}` } },
+  );
+  return data.data.documents;
+}
+
+/**
+ * Transition a verification request to a new status (admin-only).
+ *
+ * @param id - Verification request id.
+ * @param status - Target status: "in_review" | "approved" | "rejected".
+ * @param adminToken - Bearer JWT issued by /api/admin/login.
+ * @param reviewerNotes - Optional notes recorded alongside the status change.
+ * @returns The updated verification request row.
+ * @throws If the transition is not permitted by the backend state machine.
+ */
+export async function updateVerificationRequestStatus(
+  id: string,
+  status: "pending" | "in_review" | "approved" | "rejected",
+  adminToken: string,
+  reviewerNotes?: string,
+): Promise<VerificationRequestResponse> {
+  const { data } = await api.patch<{ success: boolean; data: VerificationRequestResponse }>(
+    `/api/verification-requests/${id}/status`,
+    { status, ...(reviewerNotes !== undefined ? { reviewerNotes } : {}) },
+    { headers: { Authorization: `Bearer ${adminToken}` } },
+  );
+  return data.data;
+}
+
+// ── Referrals ─────────────────────────────────────────────────────────────────
+export interface ReferralStats {
+  referralCount: number;
+  referralBonusXLM: string;
+  referredBy: string | null;
+}
+
+export async function fetchReferralStats(publicKey: string): Promise<ReferralStats> {
+  const { data } = await api.get<{ success: boolean; data: ReferralStats }>(
+    `/api/referrals/${publicKey}`,
+  );
+  return data.data;
+}
+
+export async function createReferral(referrerAddress: string, referredAddress: string) {
+  const { data } = await api.post<{ success: boolean; data: any }>(
+    "/api/referrals",
+    { referrerAddress, referredAddress },
   );
   return data.data;
 }
@@ -784,4 +1077,28 @@ export async function uploadSupportingDocument(file: File): Promise<UploadedDocu
     form,
   );
   return data.data;
+}
+
+export async function updateProjectImage(projectId: string, imageUrl: string, adminAddress: string) {
+  const { data } = await api.patch<{ success: boolean; data: ClimateProject }>(
+    `/api/projects/${projectId}`,
+    { imageUrl, adminAddress },
+  );
+  return data.data;
+}
+
+export async function fetchTagSuggestions(query: string): Promise<string[]> {
+  const { data } = await api.get<{ success: boolean; data: string[] }>(
+    "/api/tags/suggestions",
+    { params: { q: query } },
+  );
+  return data.data;
+}
+
+export async function notifyAdmin(payload: AdminNotificationPayload): Promise<{ success: boolean }> {
+  const { data } = await api.post<{ success: boolean }>(
+    "/api/admin/notifications",
+    payload,
+  );
+  return data;
 }
