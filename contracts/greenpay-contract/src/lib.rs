@@ -42,6 +42,12 @@ pub enum ContractError {
     /// An arithmetic operation would have overflowed its integer type, or a
     /// donation amount exceeds the protocol-defined maximum.
     Overflow = 3,
+    /// Invalid CO2 rate specified.
+    InvalidCo2Rate = 4,
+    /// Invalid URL specified.
+    InvalidUrl = 5,
+    /// Reentrant call detected.
+    Reentrant = 6,
 }
 
 
@@ -70,13 +76,6 @@ pub trait OracleInterface {
 }
 
 // ─── Badge tiers (on-chain) ───────────────────────────────────────────────────
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum ContractError {
-    Reentrant = 1,
-}
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -245,13 +244,6 @@ pub struct ImpactSummary {
     pub donor_stats: DonorStats,
 }
 
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum ContractError {
-    InvalidUrl = 1,
-}
-
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectMetadataUrls {
@@ -330,8 +322,26 @@ const MAX_VOTING_WINDOW_LEDGERS: u32 = 518_400; // 30 days @ 5s/ledger
 // panics and misleading impact figures from misconfigured projects.
 const MAX_CO2_PER_XLM: u32 = 100_000;
 
-// Maximum page size for paginated queries to protect contract resource limits
+// Bounds on CO₂ rate validation (kg CO₂ per XLM)
+pub const MIN_CO2_RATE: u64 = 1;
+pub const MAX_CO2_RATE: u64 = 1_000_000;
 pub const MAX_PAGE_SIZE: u32 = 100;
+
+fn is_valid_metadata_url(url: &String) -> bool {
+    const HTTPS_PREFIX: &[u8] = b"https://";
+    let bytes = url.to_bytes();
+    if url.len() > 500 || bytes.len() < HTTPS_PREFIX.len() as u32 {
+        return false;
+    }
+
+    for (index, expected) in HTTPS_PREFIX.iter().enumerate() {
+        if bytes.get(index as u32) != Some(*expected) {
+            return false;
+        }
+    }
+
+    true
+}
 
 /// Maximum single-donation size accepted by `donate()` and `donate_usdc()`.
 ///
@@ -2930,8 +2940,8 @@ mod tests {
         let admin = Address::generate(&env);
         let wallet = Address::generate(&env);
         client.initialize(&admin);
-        client.register_project(&String::from_str(&env, "proj-dup"), &String::from_str(&env, "First"), &wallet, &100, &1);
-        client.register_project(&String::from_str(&env, "proj-dup"), &String::from_str(&env, "Second"), &wallet, &100, &1);
+        client.register_project(&admin, &String::from_str(&env, "proj-dup"), &String::from_str(&env, "First"), &wallet, &100, &1);
+        client.register_project(&admin, &String::from_str(&env, "proj-dup"), &String::from_str(&env, "Second"), &wallet, &100, &1);
     }
 
     #[test]
