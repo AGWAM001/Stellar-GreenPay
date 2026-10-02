@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { useBiometricAuth } from '../hooks/useBiometricAuth';
+import { useTheme } from './theme';
 import { StrKey } from '@stellar/stellar-sdk';
 
 const DEEP_LINK_RE   = /greenpay:\/\/donate\?(.+)/;
@@ -43,7 +43,7 @@ export function parseScan(data: string): { wallet: string; projectId?: string } 
 
 export default function ScanScreen() {
   const router = useRouter();
-  const bio = useBiometricAuth();
+  const { colors } = useTheme();
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,25 +96,25 @@ export default function ScanScreen() {
 
   if (!permission) {
     return (
-      <View style={styles.centered}>
-        <Text style={styles.message}>Requesting camera permission…</Text>
+      <View style={[styles.centered, { backgroundColor: colors.background }]}>
+        <Text style={[styles.message, { color: colors.text }]}>Requesting camera permission…</Text>
       </View>
     );
   }
 
   if (!permission.granted) {
     return (
-      <View style={styles.centered}>
-        <Text style={styles.message}>Camera access is required to scan QR codes.</Text>
-        <TouchableOpacity style={styles.button} onPress={requestPermission}>
-          <Text style={styles.buttonText}>Grant Permission</Text>
+      <View style={[styles.centered, { backgroundColor: colors.background }]}>
+        <Text style={[styles.message, { color: colors.text }]}>Camera access is required to scan QR codes.</Text>
+        <TouchableOpacity style={[styles.button, { backgroundColor: colors.buttonBackground }]} onPress={requestPermission}>
+          <Text style={[styles.buttonText, { color: colors.buttonText }]}>Grant Permission</Text>
         </TouchableOpacity>
         {Platform.OS !== 'web' && (
           <TouchableOpacity
-            style={[styles.button, styles.buttonSecondary]}
+            style={[styles.button, styles.buttonSecondary, { backgroundColor: colors.secondaryText }]}
             onPress={() => Linking.openSettings()}
           >
-            <Text style={styles.buttonText}>Open Settings</Text>
+            <Text style={[styles.buttonText, { color: colors.buttonText }]}>Open Settings</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -122,7 +122,7 @@ export default function ScanScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       <CameraView
         style={StyleSheet.absoluteFillObject}
         facing="back"
@@ -136,10 +136,10 @@ export default function ScanScreen() {
         <View style={styles.middleRow}>
           <View style={styles.sideOverlay} />
           <View style={styles.viewfinder}>
-            <View style={[styles.corner, styles.topLeft]} />
-            <View style={[styles.corner, styles.topRight]} />
-            <View style={[styles.corner, styles.bottomLeft]} />
-            <View style={[styles.corner, styles.bottomRight]} />
+            <View style={[styles.corner, styles.topLeft, { borderColor: colors.primary }]} />
+            <View style={[styles.corner, styles.topRight, { borderColor: colors.primary }]} />
+            <View style={[styles.corner, styles.bottomLeft, { borderColor: colors.primary }]} />
+            <View style={[styles.corner, styles.bottomRight, { borderColor: colors.primary }]} />
           </View>
           <View style={styles.sideOverlay} />
         </View>
@@ -155,17 +155,17 @@ export default function ScanScreen() {
           ) : scanned ? (
             <Text style={styles.successText}>QR scanned — opening donation screen…</Text>
           ) : (
-            <Text style={styles.hint}>
+            <Text style={[styles.hint, { color: colors.headerText }]}>
               Point the camera at a project wallet QR code
             </Text>
           )}
 
           {scanned && (
             <TouchableOpacity
-              style={[styles.button, { marginTop: 16 }]}
+              style={[styles.button, { marginTop: 16, backgroundColor: colors.buttonBackground }]}
               onPress={() => { setScanned(false); cooldown.current = false; }}
             >
-              <Text style={styles.buttonText}>Scan Again</Text>
+              <Text style={[styles.buttonText, { color: colors.buttonText }]}>Scan Again</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -180,33 +180,26 @@ const BORDER = 3;
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000',
   },
   centered: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
-    backgroundColor: '#f0f7f0',
   },
   message: {
     fontSize: 16,
-    color: '#1a2e1a',
     textAlign: 'center',
     marginBottom: 20,
   },
   button: {
-    backgroundColor: '#227239',
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 10,
     marginTop: 8,
   },
-  buttonSecondary: {
-    backgroundColor: '#5a7a5a',
-  },
+  buttonSecondary: {},
   buttonText: {
-    color: '#fff',
     fontWeight: '700',
     fontSize: 15,
   },
@@ -238,7 +231,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   hint: {
-    color: '#c8e6c9',
     fontSize: 14,
     textAlign: 'center',
   },
@@ -256,7 +248,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     width: CORNER,
     height: CORNER,
-    borderColor: '#4caf50',
   },
   topLeft: {
     top: 0,
