@@ -66,9 +66,9 @@ function DonationCard({
   const handleCancel = () => {
     Alert.alert(
       'Cancel Recurring Donation',
-      `Stop the monthly ${donation.amountXLM} XLM donation to ${donation.projectName}?`,
+      `Cancel monthly donation of ${donation.amountXLM} XLM to ${donation.projectName}? This cannot be undone.`,
       [
-        { text: 'Keep it', style: 'cancel' },
+        { text: 'Keep donation', style: 'cancel' },
         {
           text: 'Cancel donation',
           style: 'destructive',
@@ -135,6 +135,9 @@ export default function RecurringScreen() {
   // (#1059).
   const [donorAddress, setDonorAddress] = useState('');
 
+  // Tracks which donation is mid-cancellation to prevent duplicate taps.
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+
   // Mount + foreground + focus reconciliation against the backend; the
   // AsyncStorage cache renders instantly while the refresh runs.
   const {
@@ -182,8 +185,18 @@ export default function RecurringScreen() {
   }, [loadProjects]);
 
   const handleCancel = async (id: string) => {
-    await cancel(id);
-    setStatusMessage('Recurring donation cancelled.');
+    setCancellingId(id);
+    try {
+      await cancel(id);
+      setStatusMessage('Recurring donation cancelled.');
+    } catch {
+      Alert.alert(
+        'Cancellation Failed',
+        'Could not cancel the donation. Please try again.',
+      );
+    } finally {
+      setCancellingId(null);
+    }
   };
 
   const handleConfirmSetup = async () => {

@@ -164,3 +164,12 @@ Test coverage includes:
 - API key authentication
 - Role claim validation
 - Token type validation
+
+
+## Redis cache key namespacing
+Redis is optional and often shared with other applications (managed instance, sidecar, or a cluster with several databases). Every cache key this service writes is therefore qualified with the `greenpay:` namespace — `greenpay:project:abc123`, `greenpay:leaderboard:page:1`, `greenpay:projects:list:*`. The prefix is applied centrally by the cache services (`backend/src/services/redis.js` and `backend/src/services/cache.js`) using `backend/src/utils/cacheKeys.js`, so a new call site cannot forget it and `KEYS`-based invalidation can never delete another service's data. Rate-limit counters use their own `greenpay:rate-limit:` prefix.
+
+
+| Concern | Mitigation |
+| --- | --- |
+| Shared-Redis key collision | Every cache key is namespaced (`greenpay:…`) and invalidation is namespace-scoped |
