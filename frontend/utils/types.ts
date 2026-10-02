@@ -70,6 +70,22 @@ export interface ClimateProject {
   isFollowing?: boolean;
   webhookUrl?: string | null;
   webhookSecret?: string | null;
+  activeMatch?: DonationMatch | null;
+}
+
+/**
+ * A donation matching pledge for a project.
+ */
+export interface DonationMatch {
+  id?: string;
+  projectId?: string;
+  matcherAddress?: string;
+  capXLM: string | number;
+  multiplier: number;
+  matchedXLM?: string | number;
+  remainingXLM?: string | number;
+  expiresAt: string;
+  createdAt?: string;
 }
 
 /**
