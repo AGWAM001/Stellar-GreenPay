@@ -60,13 +60,26 @@ export default function ScanScreen() {
     cooldown.current = false;
   };
 
-  const handleBarcode = ({ data }: { data: string }) => {
+  const handleBarcode = async ({ data }: { data: string }) => {
     if (cooldown.current || scanned) return;
     cooldown.current = true;
 
     const parsed = parseScan(data);
     if (!parsed) {
       setError(INVALID_QR_MESSAGE);
+      return;
+    }
+
+    // Issue #1050: require an explicit identity check before handing the
+    // scanned wallet to the donate screen, and surface the hook's failure
+    // reason instead of navigating silently when the prompt is cancelled.
+    const auth = await bio.authenticate('Confirm your identity to continue to donate');
+    if (!auth.success) {
+      setError(auth.error || 'Authentication failed. Scan again to retry.');
+      setTimeout(() => {
+        setError(null);
+        cooldown.current = false;
+      }, 3000);
       return;
     }
 

@@ -1,8 +1,12 @@
 /**
  * app/recurring.tsx
  * Monthly recurring donation management screen.
- * Lists active recurring donations stored in AsyncStorage and allows
- * the user to set up new ones or cancel individual entries.
+ * Schedules are sourced from the backend (`/api/recurring-donations`) as
+ * the system of record (#1059); AsyncStorage is only an offline-display
+ * cache managed by `useRecurringDonations`, which also re-fetches and
+ * reconciles whenever the app returns to the foreground. The screen lists
+ * active recurring donations and allows setting up new ones or cancelling
+ * individual entries.
  *
  * Accessibility (#485):
  *  - Every touchable element (project chip, Confirm / Cancel buttons,
@@ -25,17 +29,12 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { useFocusEffect } from 'expo-router';
+import { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
 import { useTheme } from './theme';
 import {
-  loadRecurringDonations,
-  cancelRecurringDonation,
-
-  createRecurringDonation,
-
   loadPaymentHistory,
+  useRecurringDonations,
 
   type RecurringDonation,
   type PaymentRecord,
@@ -43,6 +42,7 @@ import {
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 const MIN_AMOUNT_XLM = 1;
+const DONOR_ADDRESS_RE = /^G[A-Z0-9]{55}$/;
 
 interface ClimateProject {
   id: string;
@@ -69,9 +69,9 @@ function DonationCard({
   const handleCancel = () => {
     Alert.alert(
       'Cancel Recurring Donation',
-      `Stop the monthly ${donation.amountXLM} XLM donation to ${donation.projectName}?`,
+      `Cancel monthly donation of ${donation.amountXLM} XLM to ${donation.projectName}? This cannot be undone.`,
       [
-        { text: 'Keep it', style: 'cancel' },
+        { text: 'Keep donation', style: 'cancel' },
         {
           text: 'Cancel donation',
           style: 'destructive',
@@ -123,7 +123,7 @@ export default function RecurringScreen() {
   const { colors } = useTheme();
   const [donations, setDonations] = useState<RecurringDonation[]>([]);
   const [history, setHistory] = useState<PaymentRecord[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'active' | 'history'>('active');
 
   const [projects, setProjects] = useState<ClimateProject[]>([]);
@@ -134,19 +134,41 @@ export default function RecurringScreen() {
   // Donation status change, announced to screen readers as a live region.
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
-  // Guard so the initial load only runs once, even if the focus callback is
-  // invoked repeatedly (e.g. under test mocks). List mutations after setup /
-  // cancel update `donations` directly rather than re-fetching.
-  const hasLoadedRef = useRef(false);
+  // The donor address whose schedule we manage. Entering a valid Stellar
+  // public key reconciles against the backend so local-only pledges (e.g.
+  // created offline, or restored after a reinstall) sync up immediately
+  // (#1059).
+  const [donorAddress, setDonorAddress] = useState('');
 
-  const loadData = useCallback(async () => {
-    const all = await loadRecurringDonations();
-    setDonations(all.filter((d) => d.status === 'active'));
-    const h = await loadPaymentHistory();
-    setHistory(h);
-    setLoading(false);
+  // Tracks which donation is mid-cancellation to prevent duplicate taps.
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+
+  // Mount + foreground + focus reconciliation against the backend; the
+  // AsyncStorage cache renders instantly while the refresh runs.
+  const {
+    donations: allDonations,
+    isSyncing,
+    refresh,
+    create,
+    cancel,
+  } = useRecurringDonations({
+    donorAddress: DONOR_ADDRESS_RE.test(donorAddress) ? donorAddress : undefined,
+  });
+  const donations = allDonations.filter((d) => d.status === 'active');
+
+  useEffect(() => {
+    if (DONOR_ADDRESS_RE.test(donorAddress)) {
+      void refresh();
+    }
+  }, [donorAddress, refresh]);
+
+  useEffect(() => {
+    const loadHistory = async () => {
+      setHistory(await loadPaymentHistory());
+      setHistoryLoading(false);
+    };
+    void loadHistory();
   }, []);
-
 
   const loadProjects = useCallback(async () => {
     setProjectsLoading(true);
@@ -163,23 +185,24 @@ export default function RecurringScreen() {
     }
   }, []);
 
-  useFocusEffect(
-    useCallback(() => {
-      if (hasLoadedRef.current) return;
-      hasLoadedRef.current = true;
-      loadData();
-    }, [loadData])
-  );
-
   useEffect(() => {
     loadProjects();
   }, [loadProjects]);
 
 
   const handleCancel = async (id: string) => {
-    await cancelRecurringDonation(id);
-    setDonations((prev) => prev.filter((d) => d.id !== id));
-    setStatusMessage('Recurring donation cancelled.');
+    setCancellingId(id);
+    try {
+      await cancel(id);
+      setStatusMessage('Recurring donation cancelled.');
+    } catch {
+      Alert.alert(
+        'Cancellation Failed',
+        'Could not cancel the donation. Please try again.',
+      );
+    } finally {
+      setCancellingId(null);
+    }
   };
 
   const handleConfirmSetup = async () => {
@@ -199,17 +222,17 @@ export default function RecurringScreen() {
       return;
     }
 
-    const created = await createRecurringDonation({
+    const created = await create({
       projectId: project.id,
       projectName: project.name,
       amountXLM: setupAmount,
       durationMonths: null,
+      donorAddress: DONOR_ADDRESS_RE.test(donorAddress) ? donorAddress : undefined,
     });
 
-    setDonations((prev) => [created, ...prev]);
     setSetupAmount('');
     setStatusMessage(
-      `Recurring donation of ${setupAmount} XLM to ${project.name} set up.`
+      `Recurring donation of ${created.amountXLM} XLM to ${project.name} set up.`
     );
   };
 
@@ -218,7 +241,7 @@ export default function RecurringScreen() {
     setStatusMessage(null);
   };
 
-  if (loading) {
+  if (isSyncing && allDonations.length === 0 && historyLoading) {
     return (
       <View style={[styles.centered, { backgroundColor: colors.background }]}>
         <ActivityIndicator size="large" color={colors.primary} />
