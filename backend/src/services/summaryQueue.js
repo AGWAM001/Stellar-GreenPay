@@ -111,10 +111,6 @@ async function start(io) {
  * @returns {Promise<string>} job ID
  */
 
-// Track active/queued jobs and last execution time per project
-const activeJobs = new Set();
-const lastRunMap = new Map();
-const FIVE_MINUTES_MS = 5 * 60 * 1000;
 
 /**
  * Enqueue an AI summary generation job with deduplication and 5-min rate limiting per project.

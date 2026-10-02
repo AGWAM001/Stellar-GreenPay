@@ -192,7 +192,10 @@ export interface ProjectUpdate {
 export interface LeaderboardEntry {
   rank: number;
   publicKey: string;
-  displayName?: string;
+  displayName?: string | null;
+  display_name?: string | null;
+  avatarUrl?: string | null;
+  avatar_url?: string | null;
   totalDonatedXLM: string;
   totalCO2OffsetKg: string;
   projectsSupported: number;

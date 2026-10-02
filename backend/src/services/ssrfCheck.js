@@ -75,9 +75,12 @@ async function isUrlSafeFromSsrf(urlString) {
     return false;
   }
 
-  const cleanHostname = hostname.replace(/^\[|\]$/g, "");
-  if (net.isIP(cleanHostname)) {
-    return !isPrivateIp(cleanHostname);
+  if (hostname.startsWith("[") && hostname.endsWith("]")) {
+    hostname = hostname.slice(1, -1);
+  }
+
+  if (net.isIP(hostname)) {
+    return !isPrivateIp(hostname);
   }
 
   try {
