@@ -51,6 +51,8 @@ export interface ClimateProject {
   activeCampaign?: ProjectCampaign | null;
   averageRating?: number;
   ratingCount?: number;
+  /** Most recent individual reviews (latest 5), from GET /api/projects/:id. */
+  recentReviews?: ProjectReview[];
   milestones?: ProjectMilestone[];
   // Cached AI-generated impact summary (populated by
   // POST /api/projects/:id/generate-summary). Null until the project owner
@@ -68,6 +70,16 @@ export interface ClimateProject {
   isFollowing?: boolean;
   webhookUrl?: string | null;
   webhookSecret?: string | null;
+}
+
+/**
+ * A single donor review of a project.
+ */
+export interface ProjectReview {
+  donorAddress: string;
+  rating: number;
+  review: string | null;
+  createdAt: string;
 }
 
 /**
@@ -296,4 +308,34 @@ export interface VerificationRequest {
   reviewedBy: string | null;
   submittedAt: string | null;
   reviewedAt: string | null;
+}
+
+/**
+ * A team giving profile: multiple wallets grouped under one named team with
+ * a combined donation total.
+ */
+export interface Team {
+  id: string;
+  name: string;
+  logoUrl: string | null;
+  inviteCode: string;
+  createdBy: string;
+  createdAt: string;
+  memberCount: number;
+  totalDonatedXLM: string;
+  totalCO2OffsetKg: string;
+  isMember?: boolean;
+}
+
+/**
+ * One entry on the team leaderboard, ranked by combined total donated.
+ */
+export interface TeamLeaderboardEntry {
+  rank: number;
+  id: string;
+  name: string;
+  logoUrl: string | null;
+  memberCount: number;
+  totalDonatedXLM: string;
+  totalCO2OffsetKg: string;
 }
