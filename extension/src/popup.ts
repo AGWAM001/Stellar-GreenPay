@@ -635,6 +635,45 @@ const onboardingSteps = [
   },
 ];
 
+function closeOnboarding(overlay: HTMLElement) {
+  const previousFocus = (overlay as any).__previousFocus as HTMLElement | null;
+  overlay.remove();
+  previousFocus?.focus();
+}
+
+function trapFocus(overlay: HTMLElement, e: KeyboardEvent) {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    closeOnboarding(overlay);
+    return;
+  }
+
+  if (e.key !== "Tab") return;
+
+  const card = overlay.querySelector<HTMLElement>(".onboarding-card");
+  if (!card) return;
+
+  const focusable = card.querySelectorAll<HTMLElement>(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+  );
+  if (focusable.length === 0) return;
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+
+  if (e.shiftKey) {
+    if (document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    }
+  } else {
+    if (document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+}
+
 function renderOnboardingStep(overlay: HTMLElement, stepIndex: number) {
   const step = onboardingSteps[stepIndex];
   overlay.dataset.step = String(stepIndex + 1);
@@ -673,7 +712,7 @@ function renderOnboardingStep(overlay: HTMLElement, stepIndex: number) {
           if (error) error.textContent = "Could not save your progress. Please try again.";
           return;
         }
-        overlay.remove();
+        closeOnboarding(overlay);
       });
     },
   );
@@ -688,8 +727,21 @@ function showOnboardingIfNeeded() {
     const main = document.querySelector("main");
     if (!main) return;
 
+    const previousFocus = document.activeElement as HTMLElement | null;
     const overlay = document.createElement("div");
     overlay.className = "onboarding-overlay";
+    (overlay as any).__previousFocus = previousFocus;
+
+    const onKeyDown = (e: KeyboardEvent) => trapFocus(overlay, e);
+    document.addEventListener("keydown", onKeyDown);
+    const observer = new MutationObserver(() => {
+      if (!overlay.isConnected) {
+        document.removeEventListener("keydown", onKeyDown);
+        observer.disconnect();
+      }
+    });
+    observer.observe(main, { childList: true });
+
     main.appendChild(overlay);
     renderOnboardingStep(overlay, 0);
   });
