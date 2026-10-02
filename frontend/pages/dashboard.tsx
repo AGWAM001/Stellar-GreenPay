@@ -10,7 +10,7 @@ import ProjectCard from "@/components/ProjectCard";
 import ImpactCertificate from "@/components/ImpactCertificate";
 import ProjectRating from "@/components/ProjectRating";
 import ReferralSection from "@/components/ReferralSection";
-import { fetchProfile, fetchDonorHistory, fetchProjects, fetchMyTeam, createTeam, joinTeam } from "@/lib/api";
+import { fetchProfile, fetchDonorHistory, fetchProjects, fetchMyTeam, createTeam, joinTeam, exportDonationHistoryCsv } from "@/lib/api";
 import { getDueMonthlySubscriptions } from "@/lib/monthlyGiving";
 import { getXLMBalance, getFriendBotFunding, NETWORK } from "@/lib/stellar";
 import { formatXLM, formatCO2, timeAgo, shortenAddress, badgeEmoji, badgeLabel, calculateStreak } from "@/utils/format";
@@ -31,10 +31,10 @@ function triggerCertificateDownload(dataUrl: string) {
 }
 
 export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
-  const [profile,   setProfile]   = useState<DonorProfile | null>(null);
+  const [profile, setProfile] = useState<DonorProfile | null>(null);
   const [donations, setDonations] = useState<Donation[]>([]);
-  const [balance,   setBalance]   = useState<string | null>(null);
-  const [loading,   setLoading]   = useState(true);
+  const [balance, setBalance] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'impact' | 'saved'>('impact');
   const [savedProjects, setSavedProjects] = useState<ClimateProject[]>([]);
   const [allProjects, setAllProjects] = useState<ClimateProject[]>([]);
@@ -52,6 +52,7 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
   const [joinTeamId, setJoinTeamId] = useState("");
   const [joinInviteCode, setJoinInviteCode] = useState("");
   const [teamActionState, setTeamActionState] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [exportState, setExportState] = useState<"idle" | "loading" | "error">("idle");
 
   useEffect(() => {
     if (!publicKey) return;
@@ -61,16 +62,16 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
       getXLMBalance(publicKey).catch(() => { setIsUnfunded(true); return null; }),
       fetchProjects(),
     ])
-      .then(([p, d, b, allProjects]) => { 
-        setProfile(p); 
-        setDonations(d); 
+      .then(([p, d, b, allProjects]) => {
+        setProfile(p);
+        setDonations(d);
         if (b !== null) {
           setBalance(b);
           setIsUnfunded(false);
         }
         setAllProjects(allProjects);
         setSavedProjects(allProjects.filter(proj => wishlist.includes(proj.id)));
-        
+
         // Fetch pending rating
         return fetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/v1/ratings/pending?donorAddress=${publicKey}`);
       })
@@ -101,7 +102,7 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
   );
 
   const streak = calculateStreak(donations);
-  
+
   const handleFriendbot = async () => {
     if (!publicKey) return;
     setFriendbotState('loading');
@@ -116,7 +117,7 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
       setFriendbotState('error');
     }
   };
-  
+
   // Persistence for longest streak
   useEffect(() => {
     if (streak.longest > 0) {
@@ -145,8 +146,8 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
     </div>
   );
 
-  const totalDonated  = profile?.totalDonatedXLM || "0";
-  const co2Estimate   = Math.round(parseFloat(totalDonated) * 12); // rough estimate
+  const totalDonated = profile?.totalDonatedXLM || "0";
+  const co2Estimate = Math.round(parseFloat(totalDonated) * 12); // rough estimate
   const projectsCount = profile?.projectsSupported || 0;
 
   const topBadgeTier = profile?.badges?.length ? profile.badges[0].tier : null;
@@ -282,6 +283,17 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
     }
   };
 
+  const handleExportCsv = async () => {
+    setExportState("loading");
+    try {
+      await exportDonationHistoryCsv();
+      setExportState("idle");
+    } catch (err: unknown) {
+      setExportState("error");
+      window.setTimeout(() => setExportState("idle"), 3000);
+    }
+  };
+
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10 animate-fade-in">
 
@@ -299,7 +311,7 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
         <div>
           <h1 className="font-display text-3xl font-bold text-forest-900 mb-1">My Impact</h1>
           <div className="flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"/>
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
             <span className="address-tag">{shortenAddress(publicKey)}</span>
           </div>
         </div>
@@ -362,10 +374,10 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
       {/* Stats grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         {[
-          { icon: "💚", label: "Total Donated",     value: formatXLM(totalDonated) },
-          { icon: "♻️", label: "Est. CO₂ Offset",   value: formatCO2(co2Estimate) },
+          { icon: "💚", label: "Total Donated", value: formatXLM(totalDonated) },
+          { icon: "♻️", label: "Est. CO₂ Offset", value: formatCO2(co2Estimate) },
           { icon: "🌍", label: "Projects Supported", value: projectsCount.toString() },
-          { icon: "💰", label: "XLM Balance",        value: balance ? formatXLM(balance) : "—" },
+          { icon: "💰", label: "XLM Balance", value: balance ? formatXLM(balance) : "—" },
         ].map(stat => (
           <div key={stat.label} className="card text-center shadow-sm border border-forest-100/50">
             <p className="text-2xl mb-2">{stat.icon}</p>
@@ -457,8 +469,8 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
                     {streak.current} Month Streak
                   </h2>
                   <p className="text-forest-200 text-sm font-body">
-                    {streak.current > 0 
-                      ? "Keep it up! Your monthly support drives long-term change." 
+                    {streak.current > 0
+                      ? "Keep it up! Your monthly support drives long-term change."
                       : "Start a monthly donation habit to build your streak!"}
                   </p>
                 </div>
@@ -469,8 +481,8 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
                   { m: 6, label: "6mo", emoji: "🥈" },
                   { m: 12, label: "12mo", emoji: "🥇" },
                 ].map(m => (
-                  <div 
-                    key={m.m} 
+                  <div
+                    key={m.m}
                     className={`flex flex-col items-center p-3 rounded-xl border transition-all ${streak.longest >= m.m ? 'bg-white/10 border-white/30' : 'bg-black/20 border-white/5 opacity-30'}`}
                     title={`${m.m} Month Milestone`}
                   >
@@ -667,12 +679,27 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
 
           {/* Donation history */}
           <div className="card shadow-sm border border-forest-100/50">
-            <h2 className="font-display text-lg font-semibold text-forest-900 mb-5 flex items-center gap-2">
-              <span>📜</span> Donation History
-            </h2>
+            <div className="flex items-center justify-between gap-3 mb-5">
+              <h2 className="font-display text-lg font-semibold text-forest-900 flex items-center gap-2">
+                <span>📜</span> Donation History
+              </h2>
+              <div className="flex items-center gap-2">
+                {exportState === "error" && (
+                  <span className="text-xs text-red-600 font-body">Export failed — try again</span>
+                )}
+                <button
+                  onClick={handleExportCsv}
+                  disabled={exportState === "loading"}
+                  className="btn-secondary text-xs py-1.5 px-3 disabled:opacity-60"
+                  title="Download your full donation history as a CSV for tax purposes"
+                >
+                  {exportState === "loading" ? "Exporting…" : "Export CSV"}
+                </button>
+              </div>
+            </div>
             {loading ? (
               <div className="space-y-3">
-                {[1,2,3].map(i => <div key={i} className="h-16 bg-forest-50 rounded-xl animate-pulse"/>)}
+                {[1, 2, 3].map(i => <div key={i} className="h-16 bg-forest-50 rounded-xl animate-pulse" />)}
               </div>
             ) : donations.length === 0 ? (
               <div className="text-center py-12">

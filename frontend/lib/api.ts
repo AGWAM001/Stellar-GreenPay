@@ -360,6 +360,37 @@ export async function fetchDonorHistory(publicKey: string) {
   return data.data;
 }
 
+// ── Donation history export ──────────────────────────────────────────────────
+/**
+ * Download the authenticated donor's full donation history as a CSV file.
+ *
+ * Fetches the export from GET /api/donations/export (which requires a
+ * wallet-authentication JWT) and triggers a browser download of the
+ * resulting `donation-history.csv`.
+ *
+ * @throws If the request fails (including 401 unauthenticated).
+ */
+export async function exportDonationHistoryCsv(): Promise<void> {
+  const token = await getWalletAuthToken();
+  const base = process.env.NEXT_PUBLIC_API_URL || "";
+  const res = await fetch(`${base}/api/v1/donations/export?format=csv`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error || "Failed to export donation history");
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "donation-history.csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // ── Ratings ──────────────────────────────────────────────────────────────────
 /**
  * Submit (or update) the authenticated donor's rating for a project.

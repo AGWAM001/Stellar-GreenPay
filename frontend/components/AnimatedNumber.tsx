@@ -44,9 +44,6 @@ export default function AnimatedNumber({
     return 0;
   })();
 
-  const [displayValue, setDisplayValue] = useState(0);
-export default function AnimatedNumber({ value, duration = 1500, formatter }: AnimatedNumberProps) {
-  const numericValue = typeof value === "string" ? parseFloat(value.replace(/,/g, "")) : value;
   // The server and the first hydrated render must agree on the final value.
   // Starting at zero here causes a hydration mismatch and a visible flash.
   const [displayValue, setDisplayValue] = useState(numericValue);

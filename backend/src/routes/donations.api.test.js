@@ -204,6 +204,7 @@ describe("GET /api/projects/:id", () => {
     });
     pool.query.mockResolvedValueOnce({ rows: [] }); // campaigns
     pool.query.mockResolvedValueOnce({ rows: [{ avg_rating: "4.5", count: "10" }] }); // ratings
+    pool.query.mockResolvedValueOnce({ rows: [] }); // recent reviews
     pool.query.mockResolvedValueOnce({ rows: [{ count: 0 }] }); // subscribers
     pool.query.mockResolvedValueOnce({ rows: [] }); // milestones
     pool.query.mockResolvedValueOnce({ rows: [{ follow_count: 3, is_following: false }] }); // follow stats
