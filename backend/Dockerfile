@@ -3,6 +3,8 @@ FROM node:22-alpine AS test
 
 RUN addgroup -S greenpay && adduser -S greenpay -G greenpay
 
+RUN addgroup -S greenpay && adduser -S greenpay -G greenpay
+
 WORKDIR /app
 
 COPY --chown=greenpay:greenpay package*.json ./
