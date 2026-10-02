@@ -2,119 +2,83 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
 ### Added
-- Social meta tags to compare pages for better sharing
-- NSFW content scanning for project update images
-- Donor history pagination with total count reporting
-- Ranking results caching for leaderboard performance
-- Second-factor authentication for admin routes
-- Real growth data visualization with confirmed milestones
-- Safari PDF fallback support
-- Form draft persistence
-- Monthly giving and stale ZAP rules test coverage
+
+- Configurable CPU/memory requests and limits (requests 100m/256Mi, limits 500m/512Mi) and a CPU-based (70%) Horizontal Pod Autoscaler for the GreenPay Helm chart (#1209).
+- Smart Contracts section in `CONTRIBUTING.md` covering Soroban test/build/WASM/deploy workflows and linking the deployment and integration docs (#1281).
+- Authentication section in `docs/api.md` documenting the JWT Bearer scheme, login/refresh flow, `X-Admin-Key` and wallet-signed alternatives, a curl example, and a public-vs-authenticated endpoint table (#1283).
+- Supported-versions table and concrete reporting channels (GitHub Security Advisories + private contact) in `SECURITY.md`, plus a README link to the security policy (#1284).
+- Dynamic Codecov coverage badges (backend + frontend) in `README.md`, a frontend unit-test coverage job in `frontend.yml`, and coverage upload to Codecov on every `main` push (#1286).
+- CHANGELOG.md — project changelog tracking.
+- Per-donation CO₂ offset in donation API responses via `co2OffsetKg` field, computed as `amount_xlm × co2_per_xlm / 1000` across all donation endpoints (#365).
+- On-chain USDC to XLM price conversion through a configured oracle adapter (#345).
+- Untracked test coverage reports, added full coverage ignore rules in `.gitignore`, and configured CI to upload coverage reports as GitHub Actions workflow artifacts (#1046).
+- Dead-letter handling for stats refresh background queue (`statsRefreshQueue.js`), including Sentry failure logging, `dead_letter` database table persistence, pg-boss archiving, and Prometheus `stats_refresh_failures_total` failure metric tracking (#1089).
+- NSFW and violent-content scanning for project-update images via AWS Rekognition `DetectModerationLabels`, with every verdict logged to the new `update_images` table that doubles as the admin review queue (`Explicit Nudity`/`Violence` above 70% → 422, other labels above 50% → published and flagged for review) (#1101).
+- Redis result caching for the donor leaderboard (60s TTL, key per page/cursor/period/sort/verified filter, invalidated when a donation is recorded) and a `GET /metrics` Prometheus endpoint exposing `greenpay_leaderboard_query_duration_seconds` (#1093).
+- `total` donation count on `GET /api/donations/donor/:publicKey`, so the donor profile page can report progress through a long history (#1080).
 
 ### Changed
-- Monthly giving project fixtures stabilized for E2E tests
-- Recurring donation schedules now sourced from backend
-- AnimatedNumber component defers reset to animation frame
-- Horizon and Soroban request timeouts are now bounded
-- Escrow contract uses direct invoke_contract calls instead of contractclient macro
-- Project update images undergo moderation checks
-- Leaderboard exposes query latency metrics
+
+- Donor profile page now pages through donation history 20 rows at a time with a "Load more" control instead of truncating the full list client-side (#1080).
+- New `STELLAR_TIMEOUT_MS` setting (default 15000) bounds Federation, stellar.toml, Horizon and Soroban RPC requests (#1097).
+- New `IMAGE_MODERATION_*` settings for enabling moderation, its confidence thresholds and its fail-open/fail-closed mode (#1101).
 
 ### Fixed
-- Backend handles client disconnection mid-donation gracefully (#1104)
-- E2E tests stabilized for monthly giving projects
-- Hydration mismatch in AnimatedNumber component avoided
-- Mobile donation inputs kept above software keyboard (#1127)
-- CI ESLint errors in pdf.js, DonateForm, and DonationGrowthChart resolved
-- Verification tests now use adminTokenRequired middleware
-- Backend coverage artifacts prevented from being committed (#1039)
-- Mobile recurring donation schedule sourcing corrected
-- Recurring-donations API properly mounted
-- Projects pagination page size capped at MAX_PAGE_SIZE (#1151)
-- Locale persistence and cover-image fallback implemented
-- Donation feed reconnection issue resolved
-- Escrow contract type conversions and unused variables in tests
-- Contract client attribute import issues resolved
 
-### Security
-- Admin routes now require second-factor authentication
-- NSFW content scanning prevents inappropriate image uploads
-- AWS placeholders in moderation tests use non-secret values
+- Horizon and Soroban RPC calls had no timeout, so a stalled Stellar node could pin an API worker indefinitely; a chain timeout is now answered with 503 Service Unavailable (#1097).
+- Removed duplicate `defaults` key in backend CI workflow (`backend.yml`) and updated `moduleResolution` to `bundler` with `ES2020` in backend `tsconfig.json`.
+- Fixed invalid donation UUID format in `projects.campaigns.integration.test.js` and mocked Stellar Horizon `getTransaction` in `donations.integration.test.js`.
+- Added `week` time period filter to leaderboard query, explicit 200 status on donation deduplication, and accurate milestone percentage calculation with webhook trigger on donation recording.
+- Added synchronous profile update fallback in `profileQueue` when queue worker is not started and added webhook secret rotation columns to `schema.sql`.
+- Awaited profile updates and milestone delivery in `donations.js` to eliminate race conditions, added polling in integration tests, and fixed postgres health check and CI integration skip configuration in `backend.yml`.
 
-## [1.0.0] - 2024-01-15
+### Fixed
+
+- Project cover photos that fail to load now fall back to a branded leaf placeholder (`/project-placeholder.svg`) instead of a broken-image icon, in both `ProjectCard` and the map popup (#1069).
+- The live donation feed detects a dropped Horizon SSE stream, shows a "Reconnecting…" banner, retries with exponential backoff, and merges anything that arrived while disconnected via a REST catch-up (#1071).
+- The selected language persists across sessions under `greenpay:locale` (migrated from the bare `locale` key), falls back to `navigator.language`, and sets `<html lang>` before first paint instead of re-rendering after hydration (#1073).
+
+
+### Fixed
+
+- Kubernetes manifests now pin container images to immutable git-SHA tags instead of the mutable `latest` tag, with CI injecting the short SHA at deploy time (#1212).
+
+## [1.0.0] - 2025-01-01
 
 ### Added
-- Initial public release of Stellar GreenPay
-- Climate donation platform with XLM payments
-- Soroban smart contract for transparent donations
-- Verification system for climate projects
-- Freighter wallet integration
-- Express backend API with SEP-0010 authentication
-- Project browsing and filtering
-- QR code donation functionality
-- Real-time donation feed
-- Leaderboard for top donors and projects
-- Multi-signature escrow contracts for milestones
-- Mobile app with React Native
-- Browser extension for quick donations
-- Dashboard for project creators
-- Analytics and reporting
-- Webhook system for external integrations
-- Recurring donation scheduling
-- CSV export for tax reporting
+
+- Wallet Connect via Freighter browser extension.
+- Browse verified climate projects with impact metrics.
+- Direct on-chain XLM donations to project wallets.
+- Soroban smart contract for donation and CO₂ offset tracking.
+- Donor leaderboard ranked by total XLM given.
+- Project updates — organisations post progress updates to donors.
+- CI/CD pipelines (lint, type-check, test, build, e2e, DAST).
+- Docker Compose development environment with hot reload.
+- Gitleaks secret scanning in CI.
+- Backend API with Express and PostgreSQL.
+- Mobile app (React Native / Expo).
+- Browser extension.
+- Helm chart for Kubernetes deployment.
 
 ### Changed
-- Migrated from Stellar Classic to Soroban smart contracts
-- Updated wallet integration for Soroban compatibility
-- Refactored frontend architecture for performance
+
+- Standardized monorepo workspace layout across `backend`, `frontend`, `mobile`, `extension`, and `contracts` packages for initial `v1.0.0` baseline release.
+- Standardized release notes generation via `@semantic-release/changelog` in `.github/workflows/release.yml` to parse Conventional Commits into Keep a Changelog sections (#1290).
 
 ### Fixed
-- Initial bug fixes and stability improvements
-- Transaction submission error handling
-- Wallet connection reliability
+
+- Resolved initial Stellar Horizon testnet transaction confirmation handling and database migration ordering for `v1.0.0`.
 
 ### Security
-- Implemented proper authorization checks in smart contracts
-- Input validation for all user-facing forms
-- Secure transaction signing with Freighter
-- Rate limiting on backend API endpoints
-- HTTPS enforcement for production traffic
-- Project verification process to prevent fraud
 
----
+- Enforced environment-variable-only secret configuration for Stellar and PostgreSQL credentials alongside Gitleaks secret scanning in CI.
 
-## Version History
-
-- **[Unreleased]** - Current development (main branch)
-- **[1.0.0]** - 2024-01-15 - Initial public release
-
----
-
-## How to Read This Changelog
-
-- **Added** for new features
-- **Changed** for changes in existing functionality
-- **Deprecated** for soon-to-be removed features
-- **Removed** for now removed features
-- **Fixed** for any bug fixes
-- **Security** for vulnerability fixes
-
-## Contributing
-
-When making changes, please update this changelog following the [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format. Use conventional commit messages to enable automated changelog generation.
-
-## Links
-
-- [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
-- [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
-- [Conventional Commits](https://www.conventionalcommits.org/)
-
-[Unreleased]: https://github.com/muazumikail1915-create/Stellar-GreenPay/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/muazumikail1915-create/Stellar-GreenPay/releases/tag/v1.0.0
+[Unreleased]: https://github.com/Emmy123222/Stellar-GreenPay/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Emmy123222/Stellar-GreenPay/releases/tag/v1.0.0
